@@ -113,6 +113,7 @@ jobs:
         env:
           TARGET_URL: ${{ inputs.url }}
           QUALITY: ${{ inputs.quality }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
           mkdir -p out
           case "$QUALITY" in
@@ -125,10 +126,15 @@ jobs:
 
           COOKIE_ARGS=""
           if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
+          # Optional: set a repo secret PROXY_URL to route through a residential IP,
+          # which is the only thing that clears sites that block GitHub's datacenter IP
+          # (e.g. Cloudflare "Just a moment" that even a real browser can't pass here).
+          PROXY_ARGS=""
+          if [ -n "$PROXY_URL" ]; then PROXY_ARGS="--proxy $PROXY_URL"; fi
 
           run_ytdlp() {
             yt-dlp \
-              $FMT_ARGS "$@" \
+              $FMT_ARGS $PROXY_ARGS "$@" \
               --no-playlist --no-progress --newline \
               --retries 5 --fragment-retries 10 \
               --embed-metadata \
@@ -403,6 +409,7 @@ jobs:
           ITEM_URL: ${{ matrix.video.url }}
           ALBUM: ${{ matrix.video.album }}
           QUALITY: ${{ inputs.quality }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
           mkdir -p out
           case "$QUALITY" in
@@ -415,6 +422,8 @@ jobs:
 
           COOKIE_ARGS=""
           if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
+          PROXY_ARGS=""
+          if [ -n "$PROXY_URL" ]; then PROXY_ARGS="--proxy $PROXY_URL"; fi
 
           # The channel's own playlists (album, live, singles, ...) become subfolders
           # inside the final zip — see enumerate's "List collection items" step.
@@ -426,7 +435,7 @@ jobs:
 
           run_ytdlp() {
             yt-dlp \
-              $FMT_ARGS "$@" \
+              $FMT_ARGS $PROXY_ARGS "$@" \
               --no-playlist --no-progress --newline \
               --retries 5 --fragment-retries 10 \
               --embed-metadata \
