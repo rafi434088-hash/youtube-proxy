@@ -339,7 +339,7 @@
     linkRow.hidden = true;
     const linkLabel = document.createElement("span");
     linkLabel.className = "job__linklabel";
-    linkLabel.textContent = "קישור ישיר (ל-IDM וכו׳):";
+    linkLabel.textContent = "קישור ישיר לקובץ (ל-IDM וכו׳):";
     const linkInput = document.createElement("input");
     linkInput.className = "job__linkinput";
     linkInput.type = "text";
@@ -393,8 +393,17 @@
     // known — that's always more accurate than the guessed title shown before the
     // download started (which may have come from a retried, or ultimately failed,
     // oEmbed preview), so it takes over here too, not just as the saved file's name.
+    // Never fall back to the raw source URL here — that's the YouTube link the user
+    // pasted in, and showing it next to the copyable direct-download link made the two
+    // easy to confuse. The real filename replaces it as soon as the run reports one.
     const displayTitle =
-      job.status === "completed" && job.files && job.files.length ? job.files.join(", ") : job.title || job.url;
+      job.status === "completed" && job.files && job.files.length
+        ? job.files.join(", ")
+        : job.title && job.title !== job.url
+          ? job.title
+          : job.mode === "collection"
+            ? "אוסף — הכותרת תתקבל מגיטהאב"
+            : "הכותרת תתקבל מגיטהאב בסיום";
     row.title.textContent = displayTitle + modeTag;
     row.title.title = displayTitle;
     row.status.textContent = STATUS_LABELS[job.status] || job.status;
