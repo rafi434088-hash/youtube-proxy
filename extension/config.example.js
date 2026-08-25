@@ -57,7 +57,7 @@ function _assembleToken(chunks, key) {
 }
 
 const DEFAULT_CONFIG = {
-  owner: "rafi434088-hash",
+  owner: "your-github-username",
   repo: "youtube-proxy",
   workflow: "download.yml",
   ref: "main",
