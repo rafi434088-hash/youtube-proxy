@@ -68,7 +68,7 @@ https://github.com/settings/personal-access-tokens/new
    אפשר גם להדביק אותו ידנית בשדה token. בכל מקרה config.js נשאר רק אצלך —
    הוא ב-.gitignore ולא עולה לגיטהאב.
 
-טיפ: יש גם tools/clone_to_account.py שעושה את כל שלבים 1-4 אוטומטית (יוצר ריפו,
+טיפ: יש גם tools/new_account.py שעושה את כל שלבים 1-4 אוטומטית (יוצר ריפו,
 דוחף קוד, מגדיר secret, בונה תיקייה מוכנה) — צריך רק טוקן עם הרשאה ליצור ריפו.
 
 

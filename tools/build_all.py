@@ -66,7 +66,7 @@ def build_account(owner: str, folder: Path) -> Path:
     """Loadable extension for one account: extension/ + that account's config.js."""
     config = ROOT / ".configs" / f"config.{owner}.js"
     if not config.exists():
-        sys.exit(f"missing {config} — run tools/clone_to_account.py or tools/embed_token.py first")
+        sys.exit(f"missing {config} — run tools/new_account.py or tools/embed_token.py first")
     fresh(folder)
     shutil.copytree(
         ROOT / "extension", folder, ignore=shutil.ignore_patterns("config.example.js", "config.js")
