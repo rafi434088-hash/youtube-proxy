@@ -404,18 +404,32 @@ async function driveJob(jobId) {
       (run, steps) => {
         if (run.status === "queued") {
           patchJob(jobId, { detail: "בתור אצל GitHub…", percent: 8 });
-        } else if (run.status === "in_progress") {
-          if (steps && steps.total) {
-            patchJob(jobId, {
-              detail: steps.label || "רץ ב-GitHub Actions…",
-              percent: 10 + Math.floor(45 * (steps.completed / steps.total))
-            });
-          } else {
-            patchJob(jobId, { detail: "רץ ב-GitHub Actions…", percent: 12 });
-          }
-        } else {
-          patchJob(jobId, { detail: "הריצה הסתיימה", percent: 55 });
+          return;
         }
+        if (run.status !== "in_progress" || !steps || !steps.total) {
+          patchJob(jobId, {
+            detail: run.status === "in_progress" ? "רץ ב-GitHub Actions…" : "הריצה הסתיימה",
+            percent: run.status === "in_progress" ? 12 : 55
+          });
+          return;
+        }
+        // GitHub only reports whole-step completion, so between two step transitions
+        // there's no real number to show — that's most visible on "Download", which
+        // might be 2 seconds or several minutes of yt-dlp actually fetching, with
+        // nothing in between. Confirmed live: the job's raw logs 404 while it's still
+        // running (GitHub only exposes them once the job completes), so there is no
+        // way to read yt-dlp's own progress output mid-run either. Rather than sit
+        // frozen at one number for however long that step takes, ease the display
+        // toward (but never quite reach) the next step's value once one is known —
+        // an honest "still working" cue, not a fabricated byte-accurate percentage.
+        const base = 10 + Math.floor(45 * (steps.completed / steps.total));
+        const next = 10 + Math.floor((45 * Math.min(steps.total, steps.completed + 1)) / steps.total);
+        const job = jobs.get(jobId);
+        if (job.stepBase !== base) patchJob(jobId, { stepBase: base, stepNext: next, stepSince: Date.now() });
+        const since = jobs.get(jobId).stepSince || Date.now();
+        const elapsedSec = (Date.now() - since) / 1000;
+        const eased = base + (next - base) * (1 - Math.exp(-elapsedSec / 15)) * 0.92;
+        patchJob(jobId, { detail: steps.label || "רץ ב-GitHub Actions…", percent: Math.round(eased) });
       },
       signal
     );
