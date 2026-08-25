@@ -71,13 +71,23 @@ function bytesToB64(bytes) {
   return btoa(bin);
 }
 
+// chrome.downloads.download accepts subdirectories, so a collection's album/ folders
+// are preserved rather than flattened — this used to do .pop() and keep only the
+// basename, which silently threw away the per-album structure the zip was built with.
+// Each segment is sanitized separately; "." and ".." are dropped so nothing can escape
+// the Downloads directory.
 function sanitizeFilename(name) {
-  const base = (name || "download").split(/[\\/]/).pop();
-  const clean = base
-    .replace(/[<>:"|?*\x00-\x1f]/g, "_")
-    .replace(/^\.+/, "")
-    .slice(0, 180);
-  return clean || "download";
+  const segments = String(name || "")
+    .split(/[\\/]+/)
+    .map((seg) =>
+      seg
+        .replace(/[<>:"|?*\x00-\x1f]/g, "_")
+        .replace(/^\.+/, "")
+        .replace(/[ .]+$/, "") // Windows silently drops trailing dots/spaces
+        .slice(0, 150)
+    )
+    .filter((seg) => seg && seg !== "." && seg !== "..");
+  return segments.length ? segments.join("/") : "download";
 }
 
 function formatBytes(n) {
@@ -434,12 +444,19 @@ function saveBlob(blobUrl, filename, onProgress) {
         clearInterval(pollTimer);
         chrome.downloads.onChanged.removeListener(listener);
         revokeBlob(blobUrl);
-        if (state === "complete") {
-          if (onProgress) onProgress(1, 1);
-          resolve(downloadId);
-        } else {
+        if (state !== "complete") {
           reject(new Error("ההורדה למחשב הופסקה"));
+          return;
         }
+        if (onProgress) onProgress(1, 1);
+        // Report back the name Chrome actually wrote, not the one we asked for. Chrome
+        // can override a suggested filename (and for blob: URLs falls back to a
+        // generated one), so trusting our own string would show a name that isn't on
+        // disk — and would hide it happening at all.
+        chrome.downloads.search({ id: downloadId }, (items) => {
+          const actual = items && items[0] && items[0].filename;
+          resolve(actual ? actual.split(/[\\/]/).pop() : null);
+        });
       };
       const listener = (delta) => {
         if (delta.id !== downloadId || !delta.state) return;
@@ -553,7 +570,7 @@ async function driveJob(jobId) {
     for (let i = 0; i < files.length; i += 1) {
       const file = files[i];
       const filename = sanitizeFilename(file.name);
-      await saveBlob(file.blobUrl, filename, (received, total) => {
+      const actualName = await saveBlob(file.blobUrl, filename, (received, total) => {
         const frac = total ? received / total : 0;
         const base = 85 + Math.floor((15 * i) / files.length);
         const span = 15 / files.length;
@@ -564,7 +581,7 @@ async function driveJob(jobId) {
             : "שומר במחשב…"
         });
       });
-      saved.push(filename);
+      saved.push(actualName || filename.split("/").pop());
     }
 
     patchJob(jobId, { status: "completed", detail: "הקובץ נשמר במחשב", files: saved, percent: 100 });

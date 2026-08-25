@@ -339,7 +339,7 @@
     linkRow.hidden = true;
     const linkLabel = document.createElement("span");
     linkLabel.className = "job__linklabel";
-    linkLabel.textContent = "קישור ישיר לקובץ (ל-IDM וכו׳):";
+    linkLabel.textContent = "קישור ישיר ל-ZIP (ל-IDM — יורד בשם אקראי, צריך לחלץ):";
     const linkInput = document.createElement("input");
     linkInput.className = "job__linkinput";
     linkInput.type = "text";
