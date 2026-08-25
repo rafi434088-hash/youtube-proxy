@@ -66,7 +66,7 @@ jobs:
       - name: Install yt-dlp + ffmpeg
         run: |
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet --upgrade yt-dlp cryptography imageio-ffmpeg
+          python -m pip install --quiet --upgrade yt-dlp cryptography imageio-ffmpeg curl_cffi
           if command -v zip >/dev/null 2>&1; then
             : # already on the runner image, no apt needed
           else
@@ -138,16 +138,19 @@ jobs:
               -- "$TARGET_URL"
           }
 
-          # Retry ladder so a download can succeed WITHOUT the user's cookies. yt-dlp
-          # only applies the youtube extractor-args to youtube URLs, so they're a no-op
-          # elsewhere; the final rung drops cookies entirely, in case stale/irrelevant
-          # cookies were what broke it.
+          # Retry ladder so a download succeeds in as many cases as possible:
+          #  - alternate youtube player clients (helps youtube without cookies; a no-op
+          #    on other sites since yt-dlp only applies youtube extractor-args to youtube)
+          #  - --impersonate: curl_cffi mimics a real browser's TLS fingerprint, which
+          #    clears Cloudflare "anti-bot" 403s that block many news/video sites
+          #  - a final rung with no cookies at all, in case stale cookies were the cause
           ALT="youtube:player_client=default,tv,web_safari,mweb,tv_embedded"
           if run_ytdlp $COOKIE_ARGS; then :
+          elif run_ytdlp $COOKIE_ARGS --impersonate chrome; then :
           elif run_ytdlp $COOKIE_ARGS --extractor-args "$ALT"; then :
-          elif run_ytdlp --extractor-args "$ALT"; then :
+          elif run_ytdlp --impersonate chrome --extractor-args "$ALT"; then :
           else
-            echo "::error::download failed for this URL (a site that requires being signed in cannot be downloaded without cookies)"
+            echo "::error::download failed for this URL (the site may require being signed in, or blocks automated downloads)"
             rm -f cookies.txt
             exit 1
           fi
@@ -360,7 +363,7 @@ jobs:
       - name: Install yt-dlp + ffmpeg
         run: |
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet --upgrade yt-dlp cryptography imageio-ffmpeg
+          python -m pip install --quiet --upgrade yt-dlp cryptography imageio-ffmpeg curl_cffi
           if command -v ffmpeg >/dev/null 2>&1; then
             FFMPEG_BIN=$(command -v ffmpeg)
           else
@@ -432,11 +435,12 @@ jobs:
               -- "$ITEM_URL"
           }
 
-          # Same cookie-free retry ladder as the single-video job.
+          # Same retry ladder as the single-video job (impersonate clears Cloudflare).
           ALT="youtube:player_client=default,tv,web_safari,mweb,tv_embedded"
           if run_ytdlp $COOKIE_ARGS; then :
+          elif run_ytdlp $COOKIE_ARGS --impersonate chrome; then :
           elif run_ytdlp $COOKIE_ARGS --extractor-args "$ALT"; then :
-          elif run_ytdlp --extractor-args "$ALT"; then :
+          elif run_ytdlp --impersonate chrome --extractor-args "$ALT"; then :
           else
             echo "::error::item failed to download"
             exit 1
