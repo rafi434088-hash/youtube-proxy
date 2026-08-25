@@ -1,0 +1,47 @@
+name: diag
+run-name: diag-${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        required: true
+        type: string
+      url:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: List a channel in several URL forms
+        env:
+          TARGET_URL: ${{ inputs.url }}
+        run: |
+          python -m pip install --quiet --upgrade yt-dlp
+          python - <<'PY'
+          import os
+          import yt_dlp
+
+          base = os.environ["TARGET_URL"].rstrip("/")
+          forms = [base, base + "/videos", base + "/streams", base + "/playlists"]
+          opts = {"extract_flat": True, "quiet": True, "no_warnings": True, "skip_download": True, "playlistend": 5}
+
+          for url in forms:
+              try:
+                  with yt_dlp.YoutubeDL(opts) as ydl:
+                      info = ydl.extract_info(url, download=False)
+                  entries = info.get("entries") or []
+                  sample = [(e.get("id"), (e.get("title") or "")[:30], e.get("_type")) for e in entries[:3]]
+                  print(f"{url}")
+                  print(f"   type={info.get('_type')}  title={info.get('title')!r}  entries={len(entries)}")
+                  print(f"   sample={sample}")
+              except Exception as e:
+                  print(f"{url}")
+                  print(f"   ERROR: {type(e).__name__}: {str(e)[:160]}")
+          PY
