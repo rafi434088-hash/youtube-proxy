@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>YouTube Proxy</title>
-    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
     <main class="wrap">
@@ -28,15 +28,15 @@
         </button>
       </header>
 
-      <section class="banner is-warn" id="setupBanner" hidden>
+      <section class="banner" id="setupBanner" hidden>
         <span id="setupText">צריך להגדיר טוקן GitHub</span>
         <button class="btn" id="setupBtn" type="button">הגדרות</button>
       </section>
 
       <section class="card">
-        <label class="field__label" for="urlInput" id="urlLabel">קישור לסרטון ביוטיוב</label>
+        <label class="field__label" for="urlInput" id="urlLabel">קישור לוידאו, פלייליסט או ערוץ</label>
         <div class="url-row">
-          <input id="urlInput" class="input" type="text" placeholder="https://www.youtube.com/watch?v=..." dir="ltr" autocomplete="off" spellcheck="false" />
+          <input id="urlInput" class="input" type="text" placeholder="https://www.youtube.com/watch?v=... או ערוץ שלם" dir="ltr" autocomplete="off" spellcheck="false" />
           <button class="btn" id="pasteBtn" type="button">הדבק</button>
         </div>
         <p class="hint" id="urlHint">&nbsp;</p>
@@ -44,6 +44,13 @@
         <div class="preview" id="preview" hidden>
           <img id="previewThumb" class="preview__thumb" alt="" />
           <div class="preview__title" id="previewTitle"></div>
+        </div>
+
+        <span class="badge" id="collectionBadge" hidden>זוהה כערוץ/פלייליסט — יורד ונארז ל-ZIP אחד</span>
+
+        <div class="field-row">
+          <label class="field__label" for="collectionToggle">הורדת אוסף שלם (ZIP אחד בשם הערוץ)</label>
+          <input type="checkbox" id="collectionToggle" class="switch" />
         </div>
 
         <div class="field field--select">
@@ -54,18 +61,15 @@
         <button class="btn btn--primary btn--block" id="downloadBtn" type="button" disabled>הורדה</button>
       </section>
 
-      <section class="card progress" id="progressCard" hidden>
-        <div class="progress__row">
-          <span class="progress__status" id="progressStatus"></span>
-          <span class="progress__pct" id="progressPct"></span>
+      <section class="card">
+        <h2 style="margin:0;font-size:14px;">הורדות</h2>
+        <div class="job-list" id="jobList">
+          <div class="job-empty" id="jobEmpty">אין הורדות עדיין</div>
         </div>
-        <div class="progress__bar">
-          <div class="progress__fill" id="progressFill"></div>
-        </div>
-        <div class="progress__detail" id="progressDetail"></div>
-        <div class="progress__actions" id="progressActions"></div>
       </section>
+
+      <footer>הלשונית הזו יכולה להישאר פתוחה או להיסגר — ההורדות ממשיכות ברקע בכל מקרה, ומתעדכנות כאן כשחוזרים אליה.</footer>
     </main>
-    <script src="popup.js"></script>
+    <script src="panel.js"></script>
   </body>
 </html>

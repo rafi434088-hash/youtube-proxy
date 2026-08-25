@@ -12,8 +12,8 @@
   const STATUS_LABELS = {
     preparing: "שולח בקשה ל-GitHub…",
     queued: "בתור אצל GitHub…",
-    running: "מוריד ב-Actions…",
-    fetching: "מושך את הקובץ…",
+    running: "רץ ב-GitHub Actions…",
+    fetching: "מושך את הקובץ מ-GitHub…",
     saving: "שומר במחשב…",
     completed: "הקובץ נשמר במחשב",
     failed: "ההורדה נכשלה",
@@ -29,6 +29,8 @@
   const preview = $("preview");
   const previewThumb = $("previewThumb");
   const previewTitle = $("previewTitle");
+  const collectionBadge = $("collectionBadge");
+  const collectionToggle = $("collectionToggle");
   const formatSelect = $("formatSelect");
   const downloadBtn = $("downloadBtn");
   const settingsBtn = $("settingsBtn");
@@ -37,23 +39,20 @@
   const setupBtn = $("setupBtn");
   const connDot = $("conn-dot");
   const connText = $("conn-text");
-  const progressCard = $("progressCard");
-  const progressStatus = $("progressStatus");
-  const progressPct = $("progressPct");
-  const progressFill = $("progressFill");
-  const progressDetail = $("progressDetail");
-  const progressActions = $("progressActions");
+  const jobList = $("jobList");
+  const jobEmpty = $("jobEmpty");
 
   let current = null; // { url, videoId, title }
-  let currentJobId = null;
-  let pollTimer = null;
+  let collectionAuto = false; // did detection turn the toggle on, vs. the user
   let previewToken = 0;
+  let jobsPollTimer = null;
+  const jobRows = new Map(); // jobId -> { root, fill, status, pct, detail, actions }
 
   async function send(message) {
     try {
       return await chrome.runtime.sendMessage(message);
     } catch {
-      return { ok: false, error: "אין קשר לתוסף. נסו לפתוח מחדש." };
+      return { ok: false, error: "אין קשר לתוסף. נסו לרענן את הלשונית." };
     }
   }
 
@@ -75,6 +74,24 @@
       return null;
     }
     return null;
+  }
+
+  // A channel page or a bare playlist URL — not a single video that merely
+  // happens to carry a "list=" param, which usually means "just this one video".
+  function detectCollection(raw) {
+    let url;
+    try {
+      url = new URL(raw.trim());
+    } catch {
+      return false;
+    }
+    const host = url.hostname.replace(/^www\./, "").replace(/^m\./, "");
+    if (host !== "youtube.com" && host !== "music.youtube.com") return false;
+    const path = url.pathname;
+    if (path === "/playlist" && url.searchParams.get("list")) return true;
+    if (/^\/(channel|c|user)\//.test(path)) return true;
+    if (/^\/@[^/]+\/?(videos|streams|shorts|featured)?\/?$/.test(path)) return true;
+    return false;
   }
 
   function isHttpUrl(raw) {
@@ -119,17 +136,33 @@
     previewTitle.textContent = "";
   }
 
+  function setCollectionState(detected) {
+    collectionBadge.hidden = !detected;
+    if (detected && !collectionToggle.checked) {
+      collectionToggle.checked = true;
+      collectionAuto = true;
+    } else if (!detected && collectionAuto) {
+      collectionToggle.checked = false;
+      collectionAuto = false;
+    }
+  }
+
+  collectionToggle.addEventListener("change", () => {
+    collectionAuto = false; // the user took over; stop auto-toggling it back off
+  });
+
   async function validateAndPreview() {
     const raw = urlInput.value;
     previewToken += 1;
     const token = previewToken;
 
     if (!raw.trim()) {
-      urlHint.textContent = " ";
+      urlHint.textContent = " ";
       urlHint.classList.remove("is-fail");
       downloadBtn.disabled = true;
       downloadBtn.textContent = "הורדה";
       resetPreview();
+      setCollectionState(false);
       current = null;
       return;
     }
@@ -140,16 +173,19 @@
       downloadBtn.disabled = true;
       downloadBtn.textContent = "הורדה";
       resetPreview();
+      setCollectionState(false);
       current = null;
       return;
     }
 
-    urlHint.textContent = " ";
+    urlHint.textContent = " ";
     urlHint.classList.remove("is-fail");
+    setCollectionState(detectCollection(raw));
 
     const videoId = extractVideoId(raw);
     if (!videoId) {
-      // yt-dlp handles far more than YouTube; anything else just skips the preview.
+      // yt-dlp handles far more than YouTube (and channel/playlist pages don't
+      // resolve to a single video id either); anything else just skips the preview.
       current = { url: raw.trim(), videoId: null, title: null };
       resetPreview();
       downloadBtn.disabled = false;
@@ -182,10 +218,13 @@
         }
       }
     } catch {
-      /* best effort only — the runner names the file either way */
+      /* best effort only — see the fallback text below for why it's harmless */
     } finally {
       if (token === previewToken && current && current.videoId === videoId && !current.title) {
-        previewTitle.textContent = `לא הצלחתי לטעון כותרת — הקובץ ייקרא לפי ${videoId}`;
+        // This is only a cosmetic preview. The saved filename never comes from here —
+        // it's always the real title yt-dlp reads on the GitHub runner, so a failed
+        // preview here has no effect on what the file ends up called.
+        previewTitle.textContent = "אין תצוגה מקדימה לכותרת — שם הקובץ הסופי נקבע בגיטהאב לפי הכותרת האמיתית";
       }
     }
   }
@@ -211,10 +250,7 @@
     }
   });
 
-  const openOptions = () => {
-    void send({ type: "OPEN_OPTIONS" });
-    window.close();
-  };
+  const openOptions = () => void send({ type: "OPEN_OPTIONS" });
   settingsBtn.addEventListener("click", openOptions);
   setupBtn.addEventListener("click", openOptions);
 
@@ -223,66 +259,27 @@
     void startDownload({
       url: current.url,
       title: current.title,
-      quality: PRESETS[formatSelect.value].quality
+      quality: PRESETS[formatSelect.value].quality,
+      mode: collectionToggle.checked ? "collection" : "video"
     });
   });
 
   async function startDownload(input) {
-    lockForm();
-    showProgress({ status: "preparing", detail: "שולח בקשה ל-GitHub…" }, input);
     const res = await send({ type: "START_DOWNLOAD", payload: input });
     if (!res || !res.ok) {
-      showProgress({ status: "failed", detail: (res && res.error) || "ההורדה נכשלה" }, input);
-      unlockForm();
+      urlHint.textContent = (res && res.error) || "ההורדה נכשלה";
+      urlHint.classList.add("is-fail");
       return;
     }
-    currentJobId = res.jobId;
-    startPolling(res.jobId, input);
+    void refreshJobs();
   }
 
-  function startPolling(jobId, input) {
-    stopPolling();
-    let consecutiveErrors = 0;
-    const tick = async () => {
-      const res = await send({ type: "POLL_JOB", jobId });
-      if (res && res.ok) {
-        consecutiveErrors = 0;
-        showProgress(res.job, input);
-        if (isTerminal(res.job.status)) {
-          stopPolling();
-          unlockForm();
-        }
-        return;
-      }
-      consecutiveErrors += 1;
-      if (consecutiveErrors >= 4) {
-        showProgress({ status: "failed", detail: (res && res.error) || "אבד הקשר לעבודה" }, input);
-        stopPolling();
-        unlockForm();
-      }
-    };
-    void tick();
-    pollTimer = setInterval(() => void tick(), 1000);
-  }
+  /* ------------------------------------------------------------- job list */
 
-  function stopPolling() {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = null;
-  }
-
-  function lockForm() {
-    downloadBtn.disabled = true;
-    urlInput.disabled = true;
-    formatSelect.disabled = true;
-    pasteBtn.disabled = true;
-  }
-
-  function unlockForm() {
-    urlInput.disabled = false;
-    formatSelect.disabled = false;
-    pasteBtn.disabled = false;
-    downloadBtn.disabled = !current;
-    downloadBtn.textContent = "הורדה";
+  function formatBytes(n) {
+    if (!n || n < 0) return "";
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)}KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)}MB`;
   }
 
   function elapsedLabel(startedAt) {
@@ -293,55 +290,135 @@
     return m ? `${m}:${String(s).padStart(2, "0")}` : `${s}ש׳`;
   }
 
-  function addAction(label, primary, onClick) {
+  function buildJobRow(job) {
+    const root = document.createElement("div");
+    root.className = "job";
+
+    const head = document.createElement("div");
+    head.className = "job__head";
+    const title = document.createElement("div");
+    title.className = "job__title";
+    title.title = job.title || job.url;
+    head.append(title);
+    root.append(head);
+
+    const statusRow = document.createElement("div");
+    statusRow.className = "job__row";
+    const status = document.createElement("span");
+    status.className = "job__status";
+    const pct = document.createElement("span");
+    pct.className = "job__pct";
+    statusRow.append(status, pct);
+    root.append(statusRow);
+
+    const bar = document.createElement("div");
+    bar.className = "job__bar";
+    const fill = document.createElement("div");
+    fill.className = "job__fill";
+    bar.append(fill);
+    root.append(bar);
+
+    const detail = document.createElement("div");
+    detail.className = "job__detail";
+    root.append(detail);
+
+    const actions = document.createElement("div");
+    actions.className = "job__actions";
+    root.append(actions);
+
+    jobList.append(root);
+    const row = { root, title, status, pct, fill, detail, actions };
+    jobRows.set(job.id, row);
+    return row;
+  }
+
+  function addAction(row, label, primary, onClick) {
     const btn = document.createElement("button");
     btn.className = primary ? "btn btn--primary" : "btn";
     btn.type = "button";
     btn.textContent = label;
     btn.addEventListener("click", onClick);
-    progressActions.append(btn);
+    row.actions.append(btn);
   }
 
-  function showProgress(job, input) {
-    progressCard.hidden = false;
-    progressStatus.textContent = STATUS_LABELS[job.status] || job.status;
-    progressDetail.textContent = job.detail || "";
+  function renderJob(job) {
+    let row = jobRows.get(job.id);
+    if (!row) row = buildJobRow(job);
+
+    const modeTag = job.mode === "collection" ? " · אוסף" : "";
+    row.title.textContent = (job.title || job.url) + modeTag;
+    row.status.textContent = STATUS_LABELS[job.status] || job.status;
 
     const done = isTerminal(job.status);
-    // GitHub Actions gives no byte-level progress, so the bar stays indeterminate
-    // until the job reaches a terminal state rather than faking a percentage.
-    progressFill.style.width = done ? "100%" : "35%";
-    progressPct.textContent = done ? "" : elapsedLabel(job.startedAt);
-    progressFill.classList.toggle("is-failed", job.status === "failed" || job.status === "cancelled");
-    progressFill.classList.toggle("is-done", job.status === "completed");
+    const percent = Math.max(0, Math.min(100, job.percent || 0));
+    row.fill.style.width = `${done ? (job.status === "completed" ? 100 : percent) : percent}%`;
+    row.pct.textContent = done
+      ? job.status === "completed"
+        ? "הושלם"
+        : ""
+      : `${percent}% · ${elapsedLabel(job.startedAt)}`;
+    row.fill.classList.toggle("is-failed", job.status === "failed" || job.status === "cancelled");
+    row.fill.classList.toggle("is-done", job.status === "completed");
+    row.detail.textContent = job.status === "failed" ? job.error || job.detail || "" : job.detail || "";
 
-    progressActions.replaceChildren();
+    row.actions.replaceChildren();
     if (!done) {
-      addAction("עצור", false, () => {
-        if (currentJobId) void send({ type: "CANCEL_JOB", jobId: currentJobId });
-      });
+      addAction(row, "עצור", false, () => void send({ type: "CANCEL_JOB", jobId: job.id }).then(refreshJobs));
     }
     if (job.runId) {
-      addAction("פתח את הריצה", false, () => void send({ type: "OPEN_RUN", jobId: currentJobId }));
+      addAction(row, "פתח את הריצה", false, () => void send({ type: "OPEN_RUN", jobId: job.id }));
     }
     if (job.status === "completed") {
-      addAction("פתח תיקייה", true, () => void send({ type: "OPEN_DOWNLOADS" }));
+      addAction(row, "פתח תיקייה", true, () => void send({ type: "OPEN_DOWNLOADS" }));
     }
     if (job.status === "failed") {
-      addAction("נסה שוב", true, () => void startDownload(input));
+      addAction(row, "נסה שוב", true, () =>
+        void startDownload({ url: job.url, title: job.title, quality: job.quality, mode: job.mode })
+      );
     }
+  }
+
+  async function refreshJobs() {
+    const res = await send({ type: "LIST_JOBS" });
+    const jobs = (res && res.jobs) || {};
+    const ids = Object.keys(jobs).sort((a, b) => (jobs[b].startedAt || 0) - (jobs[a].startedAt || 0));
+
+    jobEmpty.hidden = ids.length > 0;
+
+    const seen = new Set();
+    for (const id of ids) {
+      renderJob(jobs[id]);
+      seen.add(id);
+    }
+    for (const [id, row] of jobRows) {
+      if (!seen.has(id)) {
+        row.root.remove();
+        jobRows.delete(id);
+      }
+    }
+    // keep the list in the same order as `ids` (newest first)
+    for (const id of ids) {
+      const row = jobRows.get(id);
+      if (row) jobList.append(row.root);
+    }
+  }
+
+  function startJobsPolling() {
+    if (jobsPollTimer) return;
+    void refreshJobs();
+    jobsPollTimer = setInterval(() => void refreshJobs(), 1000);
   }
 
   async function tryAutoFill() {
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab && tab.url && extractVideoId(tab.url)) {
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tab && tab.url && (extractVideoId(tab.url) || detectCollection(tab.url))) {
         urlInput.value = tab.url;
         await validateAndPreview();
         return;
       }
     } catch {
-      /* no tab permission for this page; fall through to the clipboard */
+      /* no visibility into that tab; fall through to the clipboard */
     }
     try {
       const text = await navigator.clipboard.readText();
@@ -356,5 +433,6 @@
 
   void loadPrefs();
   void tryAutoFill();
+  startJobsPolling();
   urlInput.focus();
 })();

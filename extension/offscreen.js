@@ -19,6 +19,35 @@
     return EXT_TO_MIME[ext] || "application/octet-stream";
   }
 
+  // Streams the zip in, throttling progress pings to background.js to ~150ms so a
+  // fast connection doesn't flood chrome.runtime.sendMessage with hundreds of calls.
+  async function readWithProgress(body, total, jobId) {
+    const reader = body.getReader();
+    const chunks = [];
+    let received = 0;
+    let lastReport = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value && value.length) {
+        chunks.push(value);
+        received += value.length;
+        const now = Date.now();
+        if (jobId && (now - lastReport > 150 || received === total)) {
+          lastReport = now;
+          chrome.runtime.sendMessage({ type: "UNZIP_PROGRESS", jobId, received, total }).catch(() => {});
+        }
+      }
+    }
+    const out = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return out;
+  }
+
   async function unzipArtifact(msg) {
     try {
       // api.github.com answers with a 302 to storage. Chrome drops the Authorization
@@ -32,7 +61,9 @@
       });
       if (!res.ok) return { ok: false, error: `הורדת ה-artifact נכשלה (HTTP ${res.status})` };
 
-      const zipped = new Uint8Array(await res.arrayBuffer());
+      const totalHeader = res.headers.get("content-length");
+      const total = totalHeader ? parseInt(totalHeader, 10) : 0;
+      const zipped = await readWithProgress(res.body, total, msg.jobId);
       const entries = fflate.unzipSync(zipped);
       const files = [];
       for (const [name, data] of Object.entries(entries)) {

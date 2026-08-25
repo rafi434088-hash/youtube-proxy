@@ -27,28 +27,29 @@
 }
 body {
   margin: 0;
-  width: 340px;
   background: var(--bg);
   color: var(--text);
   font-family: 'Segoe UI', system-ui, -apple-system, 'Noto Sans Hebrew', sans-serif;
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.5;
 }
 .wrap {
-  padding: 14px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 20px 60px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
 .hd {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 .hd__logo {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -61,13 +62,13 @@ body {
 }
 .hd h1 {
   margin: 0;
-  font-size: 15px;
+  font-size: 18px;
 }
 .icon-btn {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--muted);
@@ -103,17 +104,36 @@ body {
 }
 .conn__text {
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
 }
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px;
+  border-radius: 14px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+.banner {
+  background: var(--surface-2);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
+.banner .btn {
+  margin-inline-start: auto;
+  padding: 5px 10px;
+  font-size: 12.5px;
+}
+
 .field__label {
   font-size: 12.5px;
   color: var(--muted);
@@ -127,9 +147,9 @@ body {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 9px;
-  padding: 8px 10px;
+  padding: 9px 11px;
   font: inherit;
-  font-size: 13px;
+  font-size: 13.5px;
   width: 100%;
 }
 .input:focus-visible,
@@ -146,7 +166,7 @@ body {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 9px;
-  padding: 8px 12px;
+  padding: 8px 13px;
   cursor: pointer;
   font: inherit;
   font-size: 13px;
@@ -201,76 +221,171 @@ body {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-.field--select {
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  width: fit-content;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.field-row .field__label {
+  margin: 0;
+}
+
+.quality-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+.qbtn {
+  padding: 8px 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: center;
+  cursor: pointer;
+}
+.qbtn.sel {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* checkbox -> switch, reused from options.css */
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 40px;
+  height: 23px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background 0.18s;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  inset-inline-start: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #fff;
+  transition: inset-inline-start 0.18s;
+}
+.switch:checked {
+  background: var(--accent);
+  border-color: transparent;
+}
+.switch:checked::after {
+  inset-inline-start: 19px;
+}
+
+/* -------------------------------------------------------- downloads list */
+
+.job-list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 10px;
 }
-.progress {
+.job-empty {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 18px 0;
+}
+.job {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
-.progress__row {
+.job__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.job__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job__mode {
+  font-size: 11px;
+  color: var(--muted);
+}
+.job__row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 12.5px;
+  font-size: 12px;
 }
-.progress__status {
+.job__status {
   font-weight: 600;
 }
-.progress__bar {
+.job__pct {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.job__bar {
   height: 6px;
   border-radius: 999px;
-  background: var(--surface-2);
+  background: var(--bg);
   overflow: hidden;
 }
-.progress__fill {
+.job__fill {
   height: 100%;
   width: 0%;
   border-radius: 999px;
   background: var(--accent);
-  transition: width 0.25s ease;
+  transition: width 0.3s ease;
 }
-.progress__fill.is-failed {
+.job__fill.is-failed {
   background: var(--fail);
 }
-.progress__fill.is-done {
+.job__fill.is-done {
   background: var(--ok);
 }
-.progress__meta {
-  color: var(--muted);
-  font-size: 11.5px;
-}
-.progress__actions {
-  display: flex;
-  gap: 8px;
-}
-.progress__actions .btn {
-  flex: 1;
-}
-
-.banner {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.banner.is-warn {
-  border-color: var(--warn);
-  color: var(--text);
-}
-.banner .btn {
-  margin-inline-start: auto;
-  padding: 5px 9px;
-  font-size: 12px;
-}
-.progress__detail {
+.job__detail {
   color: var(--muted);
   font-size: 11.5px;
   overflow-wrap: anywhere;
+}
+.job__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.job__actions .btn {
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 11.5px;
 }

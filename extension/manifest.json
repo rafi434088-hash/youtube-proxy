@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YouTube Proxy",
-  "version": "1.0.0",
-  "description": "מוריד סרטונים דרך GitHub Actions: התוסף שולח את הקישור והעוגיות לוורקפלואו, ומושך את התוצאה חזרה למחשב.",
+  "version": "1.1.0",
+  "description": "מוריד סרטונים וערוצים שלמים דרך GitHub Actions: התוסף שולח את הקישור והעוגיות לוורקפלואו, ומושך את התוצאה חזרה למחשב.",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -10,12 +10,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "YouTube Proxy",
-    "default_popup": "popup.html",
-    "default_icon": {
-      "16": "icons/icon-16.png",
-      "32": "icons/icon-32.png"
-    }
+    "default_title": "YouTube Proxy — פתיחה בלשונית"
   },
   "background": {
     "service_worker": "background.js"

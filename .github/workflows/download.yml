@@ -17,6 +17,11 @@ on:
         required: false
         default: 'best'
         type: string
+      mode:
+        description: 'video (single item) | collection (whole channel/playlist, zipped)'
+        required: false
+        default: 'video'
+        type: string
       cookies_enc:
         description: 'AES-256-GCM encrypted cookies.txt, base64 (iv|ct|tag). Leave empty for none.'
         required: false
@@ -53,10 +58,12 @@ jobs:
         run: |
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet --upgrade yt-dlp cryptography
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg
-          fi
+          NEED_APT=0
+          command -v ffmpeg >/dev/null 2>&1 || NEED_APT=1
+          command -v zip >/dev/null 2>&1 || NEED_APT=1
+          if [ "$NEED_APT" = "1" ]; then sudo apt-get update -qq; fi
+          command -v ffmpeg >/dev/null 2>&1 || sudo apt-get install -y -qq ffmpeg
+          command -v zip >/dev/null 2>&1 || sudo apt-get install -y -qq zip
           yt-dlp --version
           ffmpeg -version | head -1
 
@@ -90,8 +97,9 @@ jobs:
         env:
           TARGET_URL: ${{ inputs.url }}
           QUALITY: ${{ inputs.quality }}
+          MODE: ${{ inputs.mode }}
         run: |
-          mkdir -p out
+          mkdir -p out work
           case "$QUALITY" in
             audio) FMT_ARGS="-f bestaudio/best -x --audio-format mp3 --audio-quality 0" ;;
             1080)  FMT_ARGS="-f bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b --merge-output-format mp4" ;;
@@ -103,17 +111,46 @@ jobs:
           COOKIE_ARGS=""
           if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
 
-          yt-dlp \
-            $FMT_ARGS \
-            $COOKIE_ARGS \
-            --no-playlist \
-            --no-progress \
-            --newline \
-            --retries 5 \
-            --fragment-retries 10 \
-            --embed-metadata \
-            -o "out/%(title).120B [%(id)s].%(ext)s" \
-            -- "$TARGET_URL"
+          if [ "$MODE" = "collection" ]; then
+            # Whole channel/playlist: name the zip after it (fall back to "collection"
+            # when yt-dlp can't resolve a name), download every item, then bundle
+            # everything into that one zip so exactly one file lands in Downloads.
+            NAME=$(yt-dlp --flat-playlist --print "%(playlist_title,channel,uploader)s" \
+              --playlist-items 1 $COOKIE_ARGS -- "$TARGET_URL" 2>/dev/null | head -1)
+            SAFE_NAME=$(printf '%s' "${NAME:-collection}" | tr -s ' /\\:*?"<>|' '_' | cut -c1-120)
+            [ -z "$SAFE_NAME" ] && SAFE_NAME="collection"
+            echo "collection name: $SAFE_NAME"
+
+            yt-dlp \
+              $FMT_ARGS \
+              $COOKIE_ARGS \
+              --no-progress \
+              --newline \
+              --retries 5 \
+              --fragment-retries 10 \
+              --embed-metadata \
+              --ignore-errors \
+              -o "work/%(title).100B [%(id)s].%(ext)s" \
+              -- "$TARGET_URL"
+
+            if [ -z "$(ls -A work 2>/dev/null)" ]; then
+              echo "::error::no files were downloaded for this collection"
+              exit 1
+            fi
+            (cd work && zip -r -q "../out/${SAFE_NAME}.zip" .)
+          else
+            yt-dlp \
+              $FMT_ARGS \
+              $COOKIE_ARGS \
+              --no-playlist \
+              --no-progress \
+              --newline \
+              --retries 5 \
+              --fragment-retries 10 \
+              --embed-metadata \
+              -o "out/%(title).120B [%(id)s].%(ext)s" \
+              -- "$TARGET_URL"
+          fi
 
           rm -f cookies.txt
           ls -la out

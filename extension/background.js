@@ -80,6 +80,12 @@ function sanitizeFilename(name) {
   return clean || "download";
 }
 
+function formatBytes(n) {
+  if (!n || n < 0) return "";
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 /* ----------------------------------------------------------------- cookies */
 
 const COOKIE_DOMAINS = ["youtube.com", "google.com"];
@@ -209,13 +215,43 @@ async function findRun(cfg, requestId, signal) {
   throw new Error("הריצה לא נמצאה תוך שתי דקות — בדקו בטאב Actions בריפו");
 }
 
+// Hebrew labels for the workflow's own step names, so "synced with GitHub" reads as
+// actual GitHub step names rather than a generic "running…". Falls back to the raw
+// name (with "…") for anything not in this list, so new steps still show something.
+const RUN_STEP_LABELS = {
+  "Set up job": "מתחיל את הריצה…",
+  "Validate request id": "בודק את הבקשה…",
+  "Set up Deno": "מתקין Deno…",
+  "Install yt-dlp + ffmpeg": "מתקין yt-dlp ו-ffmpeg…",
+  "Decrypt cookies": "מפענח עוגיות…",
+  Download: "מוריד עם yt-dlp…",
+  "Always drop cookies": "מנקה קבצים זמניים…",
+  "Upload artifact": "מעלה את הקובץ ל-GitHub…",
+  "Complete job": "מסיים את הריצה…"
+};
+
+async function fetchRunStepProgress(cfg, runId) {
+  const res = await ghFetch(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs/${runId}/jobs`, cfg);
+  if (!res.ok) return null;
+  const body = await res.json();
+  const ghJob = (body.jobs || [])[0];
+  const steps = ghJob && ghJob.steps;
+  if (!steps || !steps.length) return null;
+  const total = steps.length;
+  const completed = steps.filter((s) => s.status === "completed").length;
+  const active = steps.find((s) => s.status === "in_progress");
+  const label = active ? RUN_STEP_LABELS[active.name] || `${active.name}…` : null;
+  return { total, completed, label };
+}
+
 async function waitForRun(cfg, runId, onTick, signal) {
   for (let i = 0; i < 600; i += 1) {
     if (signal.cancelled) throw new Error("בוטל");
     const res = await ghFetch(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs/${runId}`, cfg);
     if (!res.ok) throw new Error(await ghError(res, "בדיקת סטטוס הריצה נכשלה"));
     const run = await res.json();
-    onTick(run);
+    const steps = run.status === "in_progress" ? await fetchRunStepProgress(cfg, runId).catch(() => null) : null;
+    onTick(run, steps);
     if (run.status === "completed") return run.conclusion;
     await sleep(5000);
   }
@@ -261,11 +297,12 @@ async function ensureOffscreen() {
   return offscreenReady;
 }
 
-async function unpackArtifact(cfg, artifactId) {
+async function unpackArtifact(cfg, artifactId, jobId) {
   await ensureOffscreen();
   const res = await chrome.runtime.sendMessage({
     target: "offscreen",
     type: "UNZIP_ARTIFACT",
+    jobId,
     url: `${API}/repos/${cfg.owner}/${cfg.repo}/actions/artifacts/${artifactId}/zip`,
     token: cfg.token
   });
@@ -277,18 +314,34 @@ function revokeBlob(blobUrl) {
   chrome.runtime.sendMessage({ target: "offscreen", type: "REVOKE", blobUrl }).catch(() => {});
 }
 
-function saveBlob(blobUrl, filename) {
+// onProgress(bytesReceived, totalBytes) is polled from chrome.downloads.search rather
+// than driven by onChanged, since onChanged only fires on state transitions, not on
+// every byte-count update — polling is the only way to get a moving number here.
+function saveBlob(blobUrl, filename, onProgress) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, (downloadId) => {
       if (chrome.runtime.lastError || downloadId === undefined) {
         reject(new Error((chrome.runtime.lastError && chrome.runtime.lastError.message) || "השמירה נכשלה"));
         return;
       }
+      const pollTimer = setInterval(() => {
+        chrome.downloads.search({ id: downloadId }, (items) => {
+          const item = items && items[0];
+          if (item && item.state === "in_progress" && onProgress) {
+            onProgress(item.bytesReceived || 0, item.totalBytes || item.fileSize || 0);
+          }
+        });
+      }, 400);
       const settle = (state) => {
+        clearInterval(pollTimer);
         chrome.downloads.onChanged.removeListener(listener);
         revokeBlob(blobUrl);
-        if (state === "complete") resolve(downloadId);
-        else reject(new Error("ההורדה למחשב הופסקה"));
+        if (state === "complete") {
+          if (onProgress) onProgress(1, 1);
+          resolve(downloadId);
+        } else {
+          reject(new Error("ההורדה למחשב הופסקה"));
+        }
       };
       const listener = (delta) => {
         if (delta.id !== downloadId || !delta.state) return;
@@ -339,20 +392,30 @@ async function driveJob(jobId) {
     const cfg = await getConfig();
 
     if (!job.runId) {
-      patchJob(jobId, { status: "queued", detail: "מחפש את הריצה ב-Actions…" });
+      patchJob(jobId, { status: "queued", detail: "מחפש את הריצה ב-Actions…", percent: 5 });
       const runId = await findRun(cfg, job.requestId, signal);
       patchJob(jobId, { runId });
     }
 
-    patchJob(jobId, { status: "running", detail: "רץ ב-GitHub Actions…" });
+    patchJob(jobId, { status: "running", detail: "רץ ב-GitHub Actions…", percent: 10 });
     const conclusion = await waitForRun(
       cfg,
       jobs.get(jobId).runId,
-      (run) => {
-        const label =
-          { queued: "בתור אצל GitHub…", in_progress: "מוריד ב-Actions…", completed: "הריצה הסתיימה" }[run.status] ||
-          run.status;
-        patchJob(jobId, { detail: label });
+      (run, steps) => {
+        if (run.status === "queued") {
+          patchJob(jobId, { detail: "בתור אצל GitHub…", percent: 8 });
+        } else if (run.status === "in_progress") {
+          if (steps && steps.total) {
+            patchJob(jobId, {
+              detail: steps.label || "רץ ב-GitHub Actions…",
+              percent: 10 + Math.floor(45 * (steps.completed / steps.total))
+            });
+          } else {
+            patchJob(jobId, { detail: "רץ ב-GitHub Actions…", percent: 12 });
+          }
+        } else {
+          patchJob(jobId, { detail: "הריצה הסתיימה", percent: 55 });
+        }
       },
       signal
     );
@@ -365,19 +428,30 @@ async function driveJob(jobId) {
       throw new Error(`הריצה נכשלה (${conclusion || "ללא מסקנה"}) — פתחו את הריצה ב-Actions לפירוט`);
     }
 
-    patchJob(jobId, { status: "fetching", detail: "מושך את הקובץ מ-GitHub…" });
+    patchJob(jobId, { status: "fetching", detail: "מושך את הקובץ מ-GitHub…", percent: 55 });
     const artifact = await findArtifact(cfg, jobs.get(jobId).runId, job.requestId);
-    const files = await unpackArtifact(cfg, artifact.id);
+    const files = await unpackArtifact(cfg, artifact.id, jobId);
 
-    patchJob(jobId, { status: "saving", detail: "שומר במחשב…" });
+    patchJob(jobId, { status: "saving", detail: "שומר במחשב…", percent: 85 });
     const saved = [];
-    for (const file of files) {
+    for (let i = 0; i < files.length; i += 1) {
+      const file = files[i];
       const filename = sanitizeFilename(file.name);
-      await saveBlob(file.blobUrl, filename);
+      await saveBlob(file.blobUrl, filename, (received, total) => {
+        const frac = total ? received / total : 0;
+        const base = 85 + Math.floor((15 * i) / files.length);
+        const span = 15 / files.length;
+        patchJob(jobId, {
+          percent: Math.min(99, base + Math.floor(span * frac)),
+          detail: total
+            ? `שומר במחשב: ${formatBytes(received)} מתוך ${formatBytes(total)}`
+            : "שומר במחשב…"
+        });
+      });
       saved.push(filename);
     }
 
-    patchJob(jobId, { status: "completed", detail: "הקובץ נשמר במחשב", files: saved });
+    patchJob(jobId, { status: "completed", detail: "הקובץ נשמר במחשב", files: saved, percent: 100 });
     notify("ההורדה הסתיימה", saved[0] || job.title || job.url);
   } catch (err) {
     const current = jobs.get(jobId);
@@ -414,14 +488,18 @@ async function startDownload(payload) {
     }
   }
 
+  const mode = payload.mode === "collection" ? "collection" : "video";
+
   jobs.set(jobId, {
     id: jobId,
     requestId,
     url: payload.url,
     title: payload.title || payload.url,
     quality: payload.quality,
+    mode,
     status: "preparing",
     detail: "שולח בקשה ל-GitHub…",
+    percent: 2,
     runId: null,
     startedAt: Date.now(),
     withCookies: Boolean(cookiesEnc),
@@ -434,6 +512,7 @@ async function startDownload(payload) {
       request_id: requestId,
       url: payload.url,
       quality: payload.quality,
+      mode,
       cookies_enc: cookiesEnc
     });
   } catch (err) {
@@ -484,6 +563,12 @@ async function handle(msg) {
       return testConnection();
     case "START_DOWNLOAD":
       return startDownload(msg.payload);
+    case "LIST_JOBS": {
+      const plain = {};
+      for (const [id, job] of jobs) plain[id] = job;
+      for (const [id, job] of jobs) if (!TERMINAL.has(job.status)) void driveJob(id);
+      return { ok: true, jobs: plain };
+    }
     case "POLL_JOB": {
       const job = jobs.get(msg.jobId);
       if (!job) return { ok: false, error: "העבודה לא נמצאה" };
@@ -523,11 +608,43 @@ async function handle(msg) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message && message.target === "offscreen") return undefined;
+  if (!message) return undefined;
+  if (message.target === "offscreen") return undefined; // request headed to the offscreen doc
+  if (message.type === "UNZIP_PROGRESS") {
+    // Fire-and-forget progress ping from offscreen.js mid-fetch — no response needed,
+    // it just nudges the job's percent while the artifact zip streams in.
+    const job = jobs.get(message.jobId);
+    if (job && !TERMINAL.has(job.status)) {
+      const total = message.total;
+      const frac = total ? Math.min(1, message.received / total) : 0;
+      patchJob(message.jobId, {
+        percent: 55 + Math.floor(30 * frac),
+        detail: total
+          ? `מוריד לדפדפן: ${formatBytes(message.received)} מתוך ${formatBytes(total)}`
+          : `מוריד לדפדפן: ${formatBytes(message.received)}`
+      });
+    }
+    return undefined;
+  }
   handle(message)
     .then(sendResponse)
     .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));
   return true;
+});
+
+// No default_popup is set, so a toolbar click lands here — open (or refocus) one
+// persistent tab instead. The download itself never depended on any UI staying
+// open; this just makes it obvious the icon isn't a "cancel my downloads" button.
+chrome.action.onClicked.addListener(async () => {
+  const panelUrl = chrome.runtime.getURL("panel.html");
+  const existing = await chrome.tabs.query({ url: panelUrl });
+  if (existing.length) {
+    const tab = existing[0];
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+    return;
+  }
+  await chrome.tabs.create({ url: panelUrl });
 });
 
 // The service worker can be torn down mid-run; this alarm picks any unfinished job
