@@ -43,7 +43,6 @@
   const jobEmpty = $("jobEmpty");
 
   let current = null; // { url, videoId, title }
-  let collectionAuto = false; // did detection turn the toggle on, vs. the user
   let previewToken = 0;
   let jobsPollTimer = null;
   const jobRows = new Map(); // jobId -> { root, fill, status, pct, detail, actions }
@@ -136,20 +135,14 @@
     previewTitle.textContent = "";
   }
 
+  // Always mirrors detection for whatever URL is currently in the box — on purpose,
+  // so a toggle left on from an earlier channel/playlist paste can never silently
+  // stick around for a plain video link typed afterward. A manual flip still works
+  // for the URL that's there right now; editing the URL resets it to match detection.
   function setCollectionState(detected) {
     collectionBadge.hidden = !detected;
-    if (detected && !collectionToggle.checked) {
-      collectionToggle.checked = true;
-      collectionAuto = true;
-    } else if (!detected && collectionAuto) {
-      collectionToggle.checked = false;
-      collectionAuto = false;
-    }
+    collectionToggle.checked = detected;
   }
-
-  collectionToggle.addEventListener("change", () => {
-    collectionAuto = false; // the user took over; stop auto-toggling it back off
-  });
 
   async function validateAndPreview() {
     const raw = urlInput.value;
