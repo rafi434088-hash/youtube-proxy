@@ -331,12 +331,46 @@
     detail.className = "job__detail";
     root.append(detail);
 
+    // Shown only while job.directUrl is set (see renderJob) — a visible, selectable
+    // link rather than a silent copy-to-clipboard, since clipboard permissions can be
+    // flaky and this is meant to be handed to an external tool like IDM.
+    const linkRow = document.createElement("div");
+    linkRow.className = "job__linkrow";
+    linkRow.hidden = true;
+    const linkLabel = document.createElement("span");
+    linkLabel.className = "job__linklabel";
+    linkLabel.textContent = "קישור ישיר (ל-IDM וכו׳):";
+    const linkInput = document.createElement("input");
+    linkInput.className = "job__linkinput";
+    linkInput.type = "text";
+    linkInput.readOnly = true;
+    linkInput.dir = "ltr";
+    linkInput.addEventListener("click", () => linkInput.select());
+    const linkCopyBtn = document.createElement("button");
+    linkCopyBtn.className = "btn";
+    linkCopyBtn.type = "button";
+    linkCopyBtn.textContent = "העתק";
+    linkCopyBtn.addEventListener("click", async () => {
+      linkInput.select();
+      try {
+        await navigator.clipboard.writeText(linkInput.value);
+        linkCopyBtn.textContent = "הועתק";
+        setTimeout(() => {
+          linkCopyBtn.textContent = "העתק";
+        }, 1500);
+      } catch {
+        /* selection above still lets the user copy manually (Ctrl+C) */
+      }
+    });
+    linkRow.append(linkLabel, linkInput, linkCopyBtn);
+    root.append(linkRow);
+
     const actions = document.createElement("div");
     actions.className = "job__actions";
     root.append(actions);
 
     jobList.append(root);
-    const row = { root, title, status, pct, fill, detail, actions };
+    const row = { root, title, status, pct, fill, detail, linkRow, linkInput, actions };
     jobRows.set(job.id, row);
     return row;
   }
@@ -377,24 +411,16 @@
     row.fill.classList.toggle("is-done", job.status === "completed");
     row.detail.textContent = job.status === "failed" ? job.error || job.detail || "" : job.detail || "";
 
+    const showLink = Boolean(job.directUrl) && (job.status === "fetching" || job.status === "saving");
+    row.linkRow.hidden = !showLink;
+    if (showLink && row.linkInput.value !== job.directUrl) row.linkInput.value = job.directUrl;
+
     row.actions.replaceChildren();
     if (!done) {
       addAction(row, "עצור", false, () => void send({ type: "CANCEL_JOB", jobId: job.id }).then(refreshJobs));
     }
     if (job.runId) {
       addAction(row, "פתח את הריצה", false, () => void send({ type: "OPEN_RUN", jobId: job.id }));
-    }
-    if (job.directUrl && (job.status === "fetching" || job.status === "saving")) {
-      // Opt-in only — the extension still fetches and saves this itself by default.
-      // This just hands off the same pre-signed link GitHub gave the extension, for
-      // someone who'd rather pull it with IDM or similar instead of waiting here.
-      addAction(row, "העתק קישור ישיר (IDM וכו')", false, async () => {
-        try {
-          await navigator.clipboard.writeText(job.directUrl);
-        } catch {
-          /* clipboard access may need a user gesture; the click itself counts as one */
-        }
-      });
     }
     if (job.status === "completed") {
       addAction(row, "פתח תיקייה", true, () => void send({ type: "OPEN_DOWNLOADS" }));
