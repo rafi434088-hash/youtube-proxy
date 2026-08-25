@@ -144,11 +144,12 @@ jobs:
           #  - --impersonate: curl_cffi mimics a real browser's TLS fingerprint, which
           #    clears Cloudflare "anti-bot" 403s that block many news/video sites
           #  - a final rung with no cookies at all, in case stale cookies were the cause
+          IMP="generic:impersonate"
           ALT="youtube:player_client=default,tv,web_safari,mweb,tv_embedded"
-          if run_ytdlp $COOKIE_ARGS; then :
-          elif run_ytdlp $COOKIE_ARGS --impersonate chrome; then :
+          if run_ytdlp $COOKIE_ARGS --extractor-args "$IMP"; then :
           elif run_ytdlp $COOKIE_ARGS --extractor-args "$ALT"; then :
-          elif run_ytdlp --impersonate chrome --extractor-args "$ALT"; then :
+          elif run_ytdlp $COOKIE_ARGS --impersonate chrome; then :
+          elif run_ytdlp --extractor-args "$IMP" --extractor-args "$ALT"; then :
           else
             echo "::error::download failed for this URL (the site may require being signed in, or blocks automated downloads)"
             rm -f cookies.txt
@@ -436,11 +437,12 @@ jobs:
           }
 
           # Same retry ladder as the single-video job (impersonate clears Cloudflare).
+          IMP="generic:impersonate"
           ALT="youtube:player_client=default,tv,web_safari,mweb,tv_embedded"
-          if run_ytdlp $COOKIE_ARGS; then :
-          elif run_ytdlp $COOKIE_ARGS --impersonate chrome; then :
+          if run_ytdlp $COOKIE_ARGS --extractor-args "$IMP"; then :
           elif run_ytdlp $COOKIE_ARGS --extractor-args "$ALT"; then :
-          elif run_ytdlp --impersonate chrome --extractor-args "$ALT"; then :
+          elif run_ytdlp $COOKIE_ARGS --impersonate chrome; then :
+          elif run_ytdlp --extractor-args "$IMP" --extractor-args "$ALT"; then :
           else
             echo "::error::item failed to download"
             exit 1
