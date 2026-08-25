@@ -239,6 +239,17 @@
   }
 
   let debounceTimer = null;
+  urlInput.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" || ev.isComposing) return;
+    ev.preventDefault();
+    // Paste-then-Enter is faster than the 250ms debounce, so the URL may not have been
+    // validated yet. validateAndPreview() sets `current` and enables the button before
+    // its first await, so calling it here lands those synchronously; only the cosmetic
+    // title lookup continues in the background, and it never affects the saved filename.
+    clearTimeout(debounceTimer);
+    void validateAndPreview();
+    if (!downloadBtn.disabled) downloadBtn.click();
+  });
   urlInput.addEventListener("input", () => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => void validateAndPreview(), 250);
