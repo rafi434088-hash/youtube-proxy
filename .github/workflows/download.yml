@@ -117,7 +117,11 @@ jobs:
             # everything into that one zip so exactly one file lands in Downloads.
             NAME=$(yt-dlp --flat-playlist --print "%(playlist_title,channel,uploader)s" \
               --playlist-items 1 $COOKIE_ARGS -- "$TARGET_URL" 2>/dev/null | head -1)
-            SAFE_NAME=$(printf '%s' "${NAME:-collection}" | tr -s ' /\\:*?"<>|' '_' | cut -c1-120)
+            # yt-dlp prints the literal string "NA" for a field it can't resolve
+            # (e.g. a direct file URL with no playlist/channel/uploader at all) —
+            # that's not an empty string, so it needs its own check.
+            if [ -z "$NAME" ] || [ "$NAME" = "NA" ]; then NAME="collection"; fi
+            SAFE_NAME=$(printf '%s' "$NAME" | tr -s ' /\\:*?"<>|' '_' | cut -c1-120)
             [ -z "$SAFE_NAME" ] && SAFE_NAME="collection"
             echo "collection name: $SAFE_NAME"
 
