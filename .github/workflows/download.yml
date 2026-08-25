@@ -57,18 +57,30 @@ jobs:
         with:
           deno-version: v2.x
 
+      # ffmpeg used to come from apt, which meant an apt-get update plus resolving
+      # and unpacking ~15 transitive codec libraries (libva2, libvpl2, ...) every
+      # single run — ~30s measured live, the actual bottleneck, not GitHub finding
+      # the run. imageio-ffmpeg ships a static ffmpeg binary as a normal pip wheel
+      # (one download from PyPI, no apt at all), cutting that to a few seconds.
       - name: Install yt-dlp + ffmpeg
         run: |
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet --upgrade yt-dlp cryptography
-          NEED_APT=0
-          command -v ffmpeg >/dev/null 2>&1 || NEED_APT=1
-          command -v zip >/dev/null 2>&1 || NEED_APT=1
-          if [ "$NEED_APT" = "1" ]; then sudo apt-get update -qq; fi
-          command -v ffmpeg >/dev/null 2>&1 || sudo apt-get install -y -qq ffmpeg
-          command -v zip >/dev/null 2>&1 || sudo apt-get install -y -qq zip
+          python -m pip install --quiet --upgrade yt-dlp cryptography imageio-ffmpeg
+          if command -v zip >/dev/null 2>&1; then
+            : # already on the runner image, no apt needed
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq zip
+          fi
+          if command -v ffmpeg >/dev/null 2>&1; then
+            FFMPEG_BIN=$(command -v ffmpeg)
+          else
+            FFMPEG_BIN=$(python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
+            chmod +x "$FFMPEG_BIN"
+          fi
+          echo "FFMPEG_BIN=$FFMPEG_BIN" >> "$GITHUB_ENV"
           yt-dlp --version
-          ffmpeg -version | head -1
+          "$FFMPEG_BIN" -version | head -1
 
       - name: Decrypt cookies
         if: ${{ inputs.cookies_enc != '' }}
@@ -138,6 +150,7 @@ jobs:
               --embed-metadata \
               --ignore-errors \
               --remote-components ejs:github \
+              --ffmpeg-location "$FFMPEG_BIN" \
               -o "work/%(title).100B [%(id)s].%(ext)s" \
               -- "$TARGET_URL"
 
@@ -157,6 +170,7 @@ jobs:
               --fragment-retries 10 \
               --embed-metadata \
               --remote-components ejs:github \
+              --ffmpeg-location "$FFMPEG_BIN" \
               -o "out/%(title).120B [%(id)s].%(ext)s" \
               -- "$TARGET_URL"
           fi
