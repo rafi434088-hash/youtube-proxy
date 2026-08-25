@@ -19,12 +19,17 @@
   const SHARE_LABELS = /share|שיתוף|שתף|مشاركة/i;
   const MENU_POPUP_SELECTOR =
     'ytd-menu-popup-renderer, tp-yt-iron-dropdown, ytd-popup-container, tp-yt-paper-listbox, ytd-menu-service-item-renderer, [role="menu"], [role="menuitem"]';
+  // Ordered most- to least-specific. The button is inserted into whichever of these
+  // exists and is visible — it never depends on YouTube offering a Download button of
+  // its own, so it shows up the same with or without Premium.
   const CONTAINER_SELECTORS = [
     "ytd-watch-metadata #top-level-buttons-computed",
     "ytd-watch-metadata #actions #menu #top-level-buttons-computed",
     "#top-level-buttons-computed",
     "ytd-watch-metadata #actions-inner #menu",
-    "ytd-menu-renderer #top-level-buttons-computed"
+    "ytd-menu-renderer #top-level-buttons-computed",
+    "ytd-watch-metadata #actions-inner",
+    "ytd-watch-metadata #actions"
   ];
   const TEMPLATE_KEY = "ytproxy:dl-button-html";
   const SHAPE_CLASSES =
@@ -265,9 +270,12 @@
       harvestTemplate(native);
       hideNative(native);
     }
-    if (handle && handle.el.isConnected) return;
+    // Also require it to still be *visible*: YouTube sometimes reparents the action bar
+    // into a hidden subtree on re-render, which leaves our button connected but not
+    // shown — in which case it has to be rebuilt, not left there invisible.
+    if (handle && handle.el.isConnected && handle.el.offsetParent !== null) return;
     const container = findActionsContainer();
-    if (!container) return;
+    if (!container) return; // not rendered yet; the MutationObserver retries
     if (handle) handle.destroy();
 
     const created = createButton(buttonLabel, onActivate);
