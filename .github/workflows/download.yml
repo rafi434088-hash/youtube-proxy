@@ -126,19 +126,31 @@ jobs:
           COOKIE_ARGS=""
           if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
 
-          yt-dlp \
-            $FMT_ARGS \
-            $COOKIE_ARGS \
-            --no-playlist \
-            --no-progress \
-            --newline \
-            --retries 5 \
-            --fragment-retries 10 \
-            --embed-metadata \
-            --remote-components ejs:github \
-            --ffmpeg-location "$FFMPEG_BIN" \
-            -o "out/%(title).120B [%(id)s].%(ext)s" \
-            -- "$TARGET_URL"
+          run_ytdlp() {
+            yt-dlp \
+              $FMT_ARGS "$@" \
+              --no-playlist --no-progress --newline \
+              --retries 5 --fragment-retries 10 \
+              --embed-metadata \
+              --remote-components ejs:github \
+              --ffmpeg-location "$FFMPEG_BIN" \
+              -o "out/%(title).120B [%(id)s].%(ext)s" \
+              -- "$TARGET_URL"
+          }
+
+          # Retry ladder so a download can succeed WITHOUT the user's cookies. yt-dlp
+          # only applies the youtube extractor-args to youtube URLs, so they're a no-op
+          # elsewhere; the final rung drops cookies entirely, in case stale/irrelevant
+          # cookies were what broke it.
+          ALT="youtube:player_client=default,tv,web_safari,mweb,tv_embedded"
+          if run_ytdlp $COOKIE_ARGS; then :
+          elif run_ytdlp $COOKIE_ARGS --extractor-args "$ALT"; then :
+          elif run_ytdlp --extractor-args "$ALT"; then :
+          else
+            echo "::error::download failed for this URL (a site that requires being signed in cannot be downloaded without cookies)"
+            rm -f cookies.txt
+            exit 1
+          fi
 
           rm -f cookies.txt
           ls -la out
@@ -408,19 +420,27 @@ jobs:
             OUT_TEMPLATE="out/%(title).100B [%(id)s].%(ext)s"
           fi
 
-          yt-dlp \
-            $FMT_ARGS \
-            $COOKIE_ARGS \
-            --no-playlist \
-            --no-progress \
-            --newline \
-            --retries 5 \
-            --fragment-retries 10 \
-            --embed-metadata \
-            --remote-components ejs:github \
-            --ffmpeg-location "$FFMPEG_BIN" \
-            -o "$OUT_TEMPLATE" \
-            -- "$ITEM_URL"
+          run_ytdlp() {
+            yt-dlp \
+              $FMT_ARGS "$@" \
+              --no-playlist --no-progress --newline \
+              --retries 5 --fragment-retries 10 \
+              --embed-metadata \
+              --remote-components ejs:github \
+              --ffmpeg-location "$FFMPEG_BIN" \
+              -o "$OUT_TEMPLATE" \
+              -- "$ITEM_URL"
+          }
+
+          # Same cookie-free retry ladder as the single-video job.
+          ALT="youtube:player_client=default,tv,web_safari,mweb,tv_embedded"
+          if run_ytdlp $COOKIE_ARGS; then :
+          elif run_ytdlp $COOKIE_ARGS --extractor-args "$ALT"; then :
+          elif run_ytdlp --extractor-args "$ALT"; then :
+          else
+            echo "::error::item failed to download"
+            exit 1
+          fi
 
       - name: Always drop cookies
         if: always()
