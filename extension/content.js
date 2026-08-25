@@ -315,5 +315,12 @@
   // YouTube is a SPA that rebuilds the action bar constantly, so re-assert on any
   // DOM change rather than only on navigation.
   new MutationObserver(schedule).observe(document.documentElement, { subtree: true, childList: true });
+  // schedule() is a debounce, so a page that mutates faster than the delay could keep
+  // resetting it and never actually run. Measured on a real watch page it fires fine,
+  // but mutation rates vary with ads/Premium/layout, so this interval guarantees the
+  // button still appears regardless of how the debounce happens to land. ensureWatch-
+  // Button() returns immediately once the button is present, so this stays cheap.
+  setInterval(ensureIntegration, 2000);
+  ensureIntegration();
   schedule();
 })();

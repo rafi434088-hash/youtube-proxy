@@ -1,16 +1,22 @@
 """Set up a second, fully independent copy of this project on another GitHub account.
 
 Creates the repo, pushes the code, generates a fresh COOKIE_KEY and stores it as a
-repo secret, writes a local config.js pointed at the new repo with the token embedded
-(obfuscated, same scheme as tools/embed_token.py), and builds a loadable extension zip.
+repo secret, then builds that account its own loadable folder + zip with the token
+embedded (obfuscated, same scheme as tools/embed_token.py).
 
 Nothing is shared with the original account: separate repo, separate cookie key,
-separate token. The two installs don't know about each other.
+separate token, separate build. extension/config.js is never touched, so whichever
+account this checkout is already installed for keeps working untouched.
 
     python tools/clone_to_account.py
 
+Outputs (all git-ignored):
+    .configs/config.<owner>.js      the account's settings + token
+    build-<owner>/                  load this folder in chrome://extensions
+    youtube-proxy-extension-<owner>.zip
+
 The token is read from a hidden prompt, never passed on the command line (so it stays
-out of shell history) and never written anywhere except the git-ignored config.js.
+out of shell history) and never written outside .configs/ and the build folder.
 """
 
 import base64
@@ -68,7 +74,15 @@ def obfuscate_token(token, n=5):
     return [b64[i::n] for i in range(n)], key
 
 
-def write_config(owner, repo, token, cookie_key):
+def write_config(owner, repo, token, cookie_key, dest_path):
+    """Render a config for `owner` to dest_path.
+
+    Deliberately never touches extension/config.js: that file belongs to whichever
+    account this checkout is primarily installed for, and an earlier version of this
+    script overwrote it — silently repointing the already-installed extension at the
+    newly created account and discarding its token. Each account gets its own file
+    under .configs/ and its own built folder instead.
+    """
     chunks, key = obfuscate_token(token)
     chunks_js = ", ".join(f'"{c}"' for c in chunks)
     template = (ROOT / "extension" / "config.example.js").read_text(encoding="utf-8")
@@ -81,16 +95,20 @@ def write_config(owner, repo, token, cookie_key):
     out = re.sub(r'^(\s*owner:\s*")[^"]*(")', rf'\g<1>{owner}\g<2>', out, count=1, flags=re.MULTILINE)
     out = re.sub(r'^(\s*repo:\s*")[^"]*(")', rf'\g<1>{repo}\g<2>', out, count=1, flags=re.MULTILINE)
     out = re.sub(r'^(\s*cookieKey:\s*")[^"]*(")', rf'\g<1>{cookie_key}\g<2>', out, count=1, flags=re.MULTILINE)
-    (ROOT / "extension" / "config.js").write_text(out, encoding="utf-8")
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(out, encoding="utf-8")
 
 
-def build_zip(dest):
-    src = ROOT / "extension"
-    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
-        for path in sorted(src.rglob("*")):
-            if path.is_file() and path.name != "config.example.js":
-                z.write(path, path.relative_to(src).as_posix())
-    return dest
+def build_package(config_path, folder, zip_path):
+    """Assemble a standalone, loadable copy of the extension for one account."""
+    if folder.exists():
+        shutil.rmtree(folder)
+    shutil.copytree(ROOT / "extension", folder, ignore=shutil.ignore_patterns("config.example.js", "config.js"))
+    shutil.copy2(config_path, folder / "config.js")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for path in sorted(folder.rglob("*")):
+            if path.is_file():
+                z.write(path, path.relative_to(folder).as_posix())
 
 
 def set_cookie_secret(token, owner, repo, cookie_key):
