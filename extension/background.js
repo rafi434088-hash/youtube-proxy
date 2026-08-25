@@ -422,6 +422,26 @@ function revokeBlob(blobUrl) {
   chrome.runtime.sendMessage({ target: "offscreen", type: "REVOKE", blobUrl }).catch(() => {});
 }
 
+// Chrome ignores the `filename` we pass for blob: downloads and names the file after
+// the blob's UUID instead (observed: "8ca5e10f-....mp4" — it picked the extension up
+// from the Blob's MIME type but dropped the name). onDeterminingFilename is the API
+// built for this: it fires after Chrome has decided a tentative name and lets us
+// replace it. Keyed by URL rather than download id, because it can fire before
+// downloads.download()'s callback hands the id back.
+const pendingNames = new Map(); // blobUrl -> filename we want on disk
+
+if (chrome.downloads.onDeterminingFilename) {
+  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    const desired = pendingNames.get(item.url);
+    if (!desired) {
+      suggest(); // not ours — leave Chrome's choice alone
+      return;
+    }
+    pendingNames.delete(item.url);
+    suggest({ filename: desired, conflictAction: "uniquify" });
+  });
+}
+
 // This has to run in the service worker: offscreen documents are restricted to the
 // chrome.runtime APIs, so chrome.downloads is undefined there — trying to start the
 // download from the document that owns the blob throws outright.
@@ -431,8 +451,10 @@ function revokeBlob(blobUrl) {
 // every byte-count update — polling is the only way to get a moving number here.
 function saveBlob(blobUrl, filename, onProgress) {
   return new Promise((resolve, reject) => {
+    pendingNames.set(blobUrl, filename);
     chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, (downloadId) => {
       if (chrome.runtime.lastError || downloadId === undefined) {
+        pendingNames.delete(blobUrl);
         reject(new Error((chrome.runtime.lastError && chrome.runtime.lastError.message) || "השמירה נכשלה"));
         return;
       }
