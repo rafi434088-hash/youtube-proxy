@@ -22,6 +22,19 @@ const API = "https://api.github.com";
 const CFG_KEY = "ytproxy_cfg";
 const JOBS_KEY = "ytproxy_jobs";
 
+// Where the extension's own CODE updates come from — deliberately separate from the
+// per-user download backend in config.js (owner/repo). Everyone shares one clean code
+// source; each keeps their own config.js. Only the code is fetched from here, never a
+// config, so no personal data crosses between installs.
+const UPDATE_OWNER = "rafi434088-hash";
+const UPDATE_REPO = "youtube-proxy-downloader";
+const UPDATE_MANIFEST_URL = `https://raw.githubusercontent.com/${UPDATE_OWNER}/${UPDATE_REPO}/main/extension/manifest.json`;
+// Native-messaging host that runs update.bat on disk — registered once by
+// install-updater.bat. The extension can't run a local script itself; this is the
+// only sanctioned bridge.
+const UPDATE_HOST = "com.rafi.ytproxy.updater";
+const UPDATE_STATE_KEY = "ytproxy_update";
+
 /* ------------------------------------------------------------------ config */
 
 async function getConfig() {
@@ -695,6 +708,85 @@ async function testConnection() {
   return { ok: true, detail: `${cfg.owner}/${cfg.repo} · ${wf.name || cfg.workflow} · ${wf.state}` };
 }
 
+/* ------------------------------------------------------------ self-update */
+
+// Compares dotted version strings: returns true if `remote` is newer than `local`.
+function isNewerVersion(remote, local) {
+  const r = String(remote).split(".").map((n) => parseInt(n, 10) || 0);
+  const l = String(local).split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(r.length, l.length); i += 1) {
+    const a = r[i] || 0;
+    const b = l[i] || 0;
+    if (a !== b) return a > b;
+  }
+  return false;
+}
+
+async function checkForUpdate() {
+  const local = chrome.runtime.getManifest().version;
+  try {
+    // cache: no-store so a checkout doesn't get a stale CDN copy and miss an update
+    const res = await fetch(UPDATE_MANIFEST_URL, { cache: "no-store" });
+    if (!res.ok) return { ok: false, local };
+    const remoteManifest = await res.json();
+    const remote = remoteManifest.version;
+    const available = Boolean(remote) && isNewerVersion(remote, local);
+    const state = { available, local, remote: remote || null, checkedAt: Date.now() };
+    await chrome.storage.local.set({ [UPDATE_STATE_KEY]: state });
+    return { ok: true, ...state };
+  } catch {
+    return { ok: false, local };
+  }
+}
+
+async function getUpdateState() {
+  const local = chrome.runtime.getManifest().version;
+  const stored = (await chrome.storage.local.get(UPDATE_STATE_KEY))[UPDATE_STATE_KEY];
+  // A stored "available" flag can be stale after an update already applied — the newly
+  // loaded manifest now matches remote — so re-derive availability against the running
+  // version rather than trusting the flag alone.
+  if (stored && stored.remote) {
+    return { ...stored, local, available: isNewerVersion(stored.remote, local) };
+  }
+  return { available: false, local, remote: null };
+}
+
+// Fires the native host, which runs update.bat on disk and only replies once it's
+// finished — so reloading here loads the freshly written files, not the old ones.
+function runUpdate() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    try {
+      chrome.runtime.sendNativeMessage(UPDATE_HOST, { action: "update" }, (response) => {
+        if (chrome.runtime.lastError) {
+          done({
+            ok: false,
+            error:
+              "לא ניתן להריץ את מעדכן העדכונים. ודאו שהרצתם פעם אחת את install-updater.bat בתיקיית התוסף. (" +
+              chrome.runtime.lastError.message +
+              ")"
+          });
+          return;
+        }
+        if (response && response.ok) {
+          done({ ok: true });
+          // Give the disk writes a beat to flush, then reload to pick up new files.
+          setTimeout(() => chrome.runtime.reload(), 800);
+        } else {
+          done({ ok: false, error: (response && response.error) || "העדכון נכשל" });
+        }
+      });
+    } catch (err) {
+      done({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+}
+
 /* -------------------------------------------------------------- messaging */
 
 async function handle(msg) {
@@ -709,6 +801,12 @@ async function handle(msg) {
         defaultOption: cfg.defaultOption || "video_best"
       };
     }
+    case "GET_UPDATE_STATE":
+      return getUpdateState();
+    case "CHECK_UPDATE":
+      return checkForUpdate();
+    case "RUN_UPDATE":
+      return runUpdate();
     case "GET_CONFIG":
       return getConfig();
     case "SET_CONFIG":
@@ -817,7 +915,13 @@ chrome.action.onClicked.addListener(async () => {
 // The service worker can be torn down mid-run; this alarm picks any unfinished job
 // back up instead of leaving it stuck on "running".
 chrome.alarms.create("ytproxy-resume", { periodInMinutes: 1 });
+// Check GitHub for a newer version of the extension a few times a day.
+chrome.alarms.create("ytproxy-update-check", { periodInMinutes: 360, when: Date.now() + 5000 });
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === "ytproxy-update-check") {
+    await checkForUpdate();
+    return;
+  }
   if (alarm.name !== "ytproxy-resume") return;
   await restoreJobs();
   await syncRunsFromGitHub();
@@ -825,3 +929,5 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!TERMINAL.has(job.status)) void driveJob(id);
   }
 });
+// Also check once right after install/update so the banner reflects reality promptly.
+chrome.runtime.onInstalled.addListener(() => void checkForUpdate());

@@ -37,6 +37,9 @@
   const setupBanner = $("setupBanner");
   const setupText = $("setupText");
   const setupBtn = $("setupBtn");
+  const updateBanner = $("updateBanner");
+  const updateText = $("updateText");
+  const updateBtn = $("updateBtn");
   const connDot = $("conn-dot");
   const connText = $("conn-text");
   const jobList = $("jobList");
@@ -509,8 +512,39 @@
     }
   }
 
+  /* --------------------------------------------------------- self-update UI */
+
+  async function refreshUpdateBanner() {
+    const state = await send({ type: "GET_UPDATE_STATE" });
+    if (state && state.available) {
+      updateText.textContent = `יש גרסה חדשה (${state.remote}) — מותקנת ${state.local}`;
+      updateBanner.hidden = false;
+    } else {
+      updateBanner.hidden = true;
+    }
+  }
+
+  updateBtn.addEventListener("click", async () => {
+    updateBtn.disabled = true;
+    updateBtn.textContent = "מעדכן…";
+    const res = await send({ type: "RUN_UPDATE" });
+    if (res && res.ok) {
+      // background.js reloads the extension right after this, which tears down this
+      // tab's connection; the message is mostly so a fast eye sees what happened.
+      updateText.textContent = "מתקין ומרענן את התוסף…";
+      updateBtn.textContent = "מתעדכן…";
+    } else {
+      updateText.textContent = (res && res.error) || "העדכון נכשל";
+      updateBtn.disabled = false;
+      updateBtn.textContent = "נסה שוב";
+    }
+  });
+
   void loadPrefs();
   void tryAutoFill();
   startJobsPolling();
+  // Show a cached result immediately, then ask GitHub for a fresh check.
+  void refreshUpdateBanner();
+  void send({ type: "CHECK_UPDATE" }).then(refreshUpdateBanner);
   urlInput.focus();
 })();
