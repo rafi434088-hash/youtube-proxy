@@ -36,10 +36,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  download:
+  # ------------------------------------------------------------- single video/audio
+  resolve-video:
+    if: inputs.mode != 'collection'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
       - name: Validate request id
         run: |
@@ -112,9 +113,8 @@ jobs:
         env:
           TARGET_URL: ${{ inputs.url }}
           QUALITY: ${{ inputs.quality }}
-          MODE: ${{ inputs.mode }}
         run: |
-          mkdir -p out work
+          mkdir -p out
           case "$QUALITY" in
             audio) FMT_ARGS="-f bestaudio/best -x --audio-format mp3 --audio-quality 0" ;;
             1080)  FMT_ARGS="-f bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b --merge-output-format mp4" ;;
@@ -126,54 +126,19 @@ jobs:
           COOKIE_ARGS=""
           if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
 
-          if [ "$MODE" = "collection" ]; then
-            # Whole channel/playlist: name the zip after it (fall back to "collection"
-            # when yt-dlp can't resolve a name), download every item, then bundle
-            # everything into that one zip so exactly one file lands in Downloads.
-            NAME=$(yt-dlp --flat-playlist --print "%(playlist_title,channel,uploader)s" \
-              --playlist-items 1 $COOKIE_ARGS -- "$TARGET_URL" 2>/dev/null | head -1)
-            # yt-dlp prints the literal string "NA" for a field it can't resolve
-            # (e.g. a direct file URL with no playlist/channel/uploader at all) —
-            # that's not an empty string, so it needs its own check.
-            if [ -z "$NAME" ] || [ "$NAME" = "NA" ]; then NAME="collection"; fi
-            SAFE_NAME=$(printf '%s' "$NAME" | tr -s ' /\\:*?"<>|' '_' | cut -c1-120)
-            [ -z "$SAFE_NAME" ] && SAFE_NAME="collection"
-            echo "collection name: $SAFE_NAME"
-
-            yt-dlp \
-              $FMT_ARGS \
-              $COOKIE_ARGS \
-              --no-progress \
-              --newline \
-              --retries 5 \
-              --fragment-retries 10 \
-              --embed-metadata \
-              --ignore-errors \
-              --remote-components ejs:github \
-              --ffmpeg-location "$FFMPEG_BIN" \
-              -o "work/%(title).100B [%(id)s].%(ext)s" \
-              -- "$TARGET_URL"
-
-            if [ -z "$(ls -A work 2>/dev/null)" ]; then
-              echo "::error::no files were downloaded for this collection"
-              exit 1
-            fi
-            (cd work && zip -r -q "../out/${SAFE_NAME}.zip" .)
-          else
-            yt-dlp \
-              $FMT_ARGS \
-              $COOKIE_ARGS \
-              --no-playlist \
-              --no-progress \
-              --newline \
-              --retries 5 \
-              --fragment-retries 10 \
-              --embed-metadata \
-              --remote-components ejs:github \
-              --ffmpeg-location "$FFMPEG_BIN" \
-              -o "out/%(title).120B [%(id)s].%(ext)s" \
-              -- "$TARGET_URL"
-          fi
+          yt-dlp \
+            $FMT_ARGS \
+            $COOKIE_ARGS \
+            --no-playlist \
+            --no-progress \
+            --newline \
+            --retries 5 \
+            --fragment-retries 10 \
+            --embed-metadata \
+            --remote-components ejs:github \
+            --ffmpeg-location "$FFMPEG_BIN" \
+            -o "out/%(title).120B [%(id)s].%(ext)s" \
+            -- "$TARGET_URL"
 
           rm -f cookies.txt
           ls -la out
@@ -181,6 +146,231 @@ jobs:
       - name: Always drop cookies
         if: always()
         run: rm -f cookies.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dl-${{ inputs.request_id }}
+          path: out/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
+  # ------------------------------------------------- collection: list what's in it
+  # A separate job because a matrix's item list has to be known before that matrix's
+  # jobs are scheduled — this can't be computed inside the same job that uses it.
+  # --flat-playlist only reads the listing page, no per-item extraction, so this is
+  # fast and doesn't need Deno/ffmpeg/challenge-solving at all.
+  enumerate:
+    if: inputs.mode == 'collection'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      items: ${{ steps.list.outputs.items }}
+      collection_name: ${{ steps.list.outputs.name }}
+      item_count: ${{ steps.list.outputs.count }}
+    steps:
+      - name: Validate request id
+        run: |
+          case "${{ inputs.request_id }}" in
+            *[!a-zA-Z0-9-]*|"") echo "::error::request_id must be [a-zA-Z0-9-] only"; exit 1;;
+          esac
+
+      - name: List collection items
+        id: list
+        env:
+          TARGET_URL: ${{ inputs.url }}
+          COOKIES_ENC: ${{ inputs.cookies_enc }}
+          COOKIE_KEY: ${{ secrets.COOKIE_KEY }}
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet --upgrade yt-dlp cryptography
+
+          COOKIE_ARGS=""
+          if [ -n "$COOKIES_ENC" ] && [ -n "$COOKIE_KEY" ]; then
+            python - <<'PY'
+          import base64, os, sys
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          blob = base64.b64decode(os.environ["COOKIES_ENC"])
+          key = bytes.fromhex(os.environ["COOKIE_KEY"].strip())
+          iv, ct = blob[:12], blob[12:]
+          try:
+              data = AESGCM(key).decrypt(iv, ct, None)
+          except Exception:
+              print("::error::cookie decryption failed - COOKIE_KEY in the extension and in the repo secret do not match")
+              sys.exit(1)
+          with open("cookies.txt", "wb") as f:
+              f.write(data)
+          print(f"cookies.txt written ({len(data)} bytes)")
+          PY
+            COOKIE_ARGS="--cookies cookies.txt"
+          fi
+
+          NAME=$(yt-dlp --flat-playlist --print "%(playlist_title,channel,uploader)s" \
+            --playlist-items 1 $COOKIE_ARGS -- "$TARGET_URL" 2>/dev/null | head -1)
+          # yt-dlp prints the literal string "NA" for a field it can't resolve — not
+          # an empty string, so it needs its own check.
+          if [ -z "$NAME" ] || [ "$NAME" = "NA" ]; then NAME="collection"; fi
+          SAFE_NAME=$(printf '%s' "$NAME" | tr -s ' /\\:*?"<>|' '_' | cut -c1-120)
+          [ -z "$SAFE_NAME" ] && SAFE_NAME="collection"
+
+          MAX_ITEMS=200
+          LISTING=$(yt-dlp --flat-playlist --print "%(id)s	%(webpage_url,url)s" \
+            $COOKIE_ARGS --playlist-end "$MAX_ITEMS" -- "$TARGET_URL" 2>/dev/null)
+          rm -f cookies.txt
+
+          if [ -z "$LISTING" ]; then
+            echo "::error::no items found at this URL"
+            exit 1
+          fi
+          COUNT=$(printf '%s\n' "$LISTING" | grep -c .)
+          if [ "$COUNT" -ge "$MAX_ITEMS" ]; then
+            echo "::notice::stopping at $MAX_ITEMS items — this collection may have more"
+          fi
+          echo "collection: $SAFE_NAME ($COUNT items)"
+
+          JSON=$(printf '%s\n' "$LISTING" | python -c "
+          import sys, json
+          items = []
+          for line in sys.stdin:
+              line = line.rstrip('\n')
+              if not line.strip():
+                  continue
+              parts = line.split('\t', 1)
+              if len(parts) == 2:
+                  items.append({'id': parts[0], 'url': parts[1]})
+          print(json.dumps(items))
+          ")
+          echo "items=$JSON" >> "$GITHUB_OUTPUT"
+          echo "name=$SAFE_NAME" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+  # --------------------------------------------- collection: one job per item
+  # This is also what gives the extension real "X of Y downloaded" progress: GitHub's
+  # API exposes each matrix job's status individually, unlike a single step's internal
+  # progress (which isn't visible from outside while the job is still running).
+  download-item:
+    if: inputs.mode == 'collection'
+    needs: enumerate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true # one bad video shouldn't fail the whole collection
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        video: ${{ fromJson(needs.enumerate.outputs.items) }}
+    name: download-item ${{ matrix.video.id }}
+    steps:
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp + ffmpeg
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet --upgrade yt-dlp cryptography imageio-ffmpeg
+          if command -v ffmpeg >/dev/null 2>&1; then
+            FFMPEG_BIN=$(command -v ffmpeg)
+          else
+            FFMPEG_BIN=$(python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
+            chmod +x "$FFMPEG_BIN"
+          fi
+          echo "FFMPEG_BIN=$FFMPEG_BIN" >> "$GITHUB_ENV"
+
+      - name: Decrypt cookies
+        if: ${{ inputs.cookies_enc != '' }}
+        env:
+          COOKIES_ENC: ${{ inputs.cookies_enc }}
+          COOKIE_KEY: ${{ secrets.COOKIE_KEY }}
+        run: |
+          if [ -z "$COOKIE_KEY" ]; then
+            echo "::error::repository secret COOKIE_KEY is missing"
+            exit 1
+          fi
+          python - <<'PY'
+          import base64, os, sys
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          blob = base64.b64decode(os.environ["COOKIES_ENC"])
+          key = bytes.fromhex(os.environ["COOKIE_KEY"].strip())
+          iv, ct = blob[:12], blob[12:]
+          try:
+              data = AESGCM(key).decrypt(iv, ct, None)
+          except Exception:
+              print("::error::cookie decryption failed - COOKIE_KEY in the extension and in the repo secret do not match")
+              sys.exit(1)
+          with open("cookies.txt", "wb") as f:
+              f.write(data)
+          PY
+
+      - name: Download item
+        env:
+          ITEM_URL: ${{ matrix.video.url }}
+          QUALITY: ${{ inputs.quality }}
+        run: |
+          mkdir -p out
+          case "$QUALITY" in
+            audio) FMT_ARGS="-f bestaudio/best -x --audio-format mp3 --audio-quality 0" ;;
+            1080)  FMT_ARGS="-f bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b --merge-output-format mp4" ;;
+            720)   FMT_ARGS="-f bv*[height<=720]+ba/b[height<=720]/bv*+ba/b --merge-output-format mp4" ;;
+            480)   FMT_ARGS="-f bv*[height<=480]+ba/b[height<=480]/bv*+ba/b --merge-output-format mp4" ;;
+            *)     FMT_ARGS="-f bv*+ba/b --merge-output-format mp4" ;;
+          esac
+
+          COOKIE_ARGS=""
+          if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
+
+          yt-dlp \
+            $FMT_ARGS \
+            $COOKIE_ARGS \
+            --no-playlist \
+            --no-progress \
+            --newline \
+            --retries 5 \
+            --fragment-retries 10 \
+            --embed-metadata \
+            --remote-components ejs:github \
+            --ffmpeg-location "$FFMPEG_BIN" \
+            -o "out/%(title).100B [%(id)s].%(ext)s" \
+            -- "$ITEM_URL"
+
+      - name: Always drop cookies
+        if: always()
+        run: rm -f cookies.txt
+
+      - name: Upload item artifact
+        if: hashFiles('out/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: dl-${{ inputs.request_id }}-item-${{ matrix.video.id }}
+          path: out/
+          retention-days: 1
+          compression-level: 0
+
+  # --------------------------------------------------- collection: zip it all up
+  package:
+    if: always() && inputs.mode == 'collection' && needs.enumerate.result == 'success'
+    needs: [enumerate, download-item]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Collect item artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dl-${{ inputs.request_id }}-item-*
+          path: merged
+          merge-multiple: true
+
+      - name: Zip the collection
+        run: |
+          mkdir -p out
+          if [ -z "$(ls -A merged 2>/dev/null)" ]; then
+            echo "::error::every item in this collection failed to download"
+            exit 1
+          fi
+          (cd merged && zip -r -q "../out/${{ needs.enumerate.outputs.collection_name }}.zip" .)
+          echo "packaged $(ls merged | wc -l) of ${{ needs.enumerate.outputs.item_count }} items"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

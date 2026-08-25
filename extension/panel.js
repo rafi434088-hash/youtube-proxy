@@ -387,7 +387,11 @@
     if (job.status === "completed") {
       addAction(row, "פתח תיקייה", true, () => void send({ type: "OPEN_DOWNLOADS" }));
     }
-    if (job.status === "failed") {
+    if (job.status === "failed" && job.url) {
+      // A recovered job (reconnected to a run this session never dispatched) has no
+      // real URL to retry with — GitHub doesn't expose workflow_dispatch inputs after
+      // the fact, so job.url is deliberately left empty for those. "Open the run" above
+      // is the only way back into one of those.
       addAction(row, "נסה שוב", true, () =>
         void startDownload({ url: job.url, title: job.title, quality: job.quality, mode: job.mode })
       );

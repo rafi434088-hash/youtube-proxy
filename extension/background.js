@@ -230,11 +230,48 @@ const RUN_STEP_LABELS = {
   "Complete job": "מסיים את הריצה…"
 };
 
-async function fetchRunStepProgress(cfg, runId) {
-  const res = await ghFetch(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs/${runId}/jobs`, cfg);
-  if (!res.ok) return null;
-  const body = await res.json();
-  const ghJob = (body.jobs || [])[0];
+// Up to 3 pages (300 jobs) — comfortably covers the 200-item collection cap plus
+// enumerate/package/resolve-video.
+async function fetchAllRunJobs(cfg, runId) {
+  const all = [];
+  for (let page = 1; page <= 3; page += 1) {
+    const res = await ghFetch(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs/${runId}/jobs?per_page=100&page=${page}`, cfg);
+    if (!res.ok) break;
+    const body = await res.json();
+    const batch = body.jobs || [];
+    all.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return all;
+}
+
+// Collection mode fans out one GitHub job per item (see download.yml) specifically so
+// this can exist: GitHub's API reports whole-job completion, so counting how many of
+// those per-item jobs are done gives real "X of Y downloaded" progress — something no
+// single step, however it's split up, can ever expose while it's still running.
+async function fetchRunProgress(cfg, runId, mode) {
+  const allJobs = await fetchAllRunJobs(cfg, runId);
+  if (!allJobs.length) return null;
+
+  if (mode === "collection") {
+    const items = allJobs.filter((j) => j.name && j.name.startsWith("download-item "));
+    if (!items.length) {
+      const enumJob = allJobs.find((j) => j.name === "enumerate");
+      if (!enumJob || enumJob.status !== "completed") {
+        return { total: 0, completed: 0, label: "סופר כמה פריטים יש בערוץ…" };
+      }
+      return null;
+    }
+    const succeeded = items.filter((j) => j.status === "completed" && j.conclusion === "success").length;
+    const failed = items.filter((j) => j.status === "completed" && j.conclusion !== "success").length;
+    const packaging = allJobs.some((j) => j.name === "package" && j.status !== "queued");
+    const label = packaging
+      ? "אורז הכל ל-ZIP אחד…"
+      : `${succeeded} מתוך ${items.length} פריטים ירדו` + (failed ? ` (${failed} נכשלו)` : "");
+    return { total: items.length, completed: succeeded + failed, label };
+  }
+
+  const ghJob = allJobs[0];
   const steps = ghJob && ghJob.steps;
   if (!steps || !steps.length) return null;
   const total = steps.length;
@@ -244,13 +281,13 @@ async function fetchRunStepProgress(cfg, runId) {
   return { total, completed, label };
 }
 
-async function waitForRun(cfg, runId, onTick, signal) {
+async function waitForRun(cfg, runId, onTick, signal, mode) {
   for (let i = 0; i < 600; i += 1) {
     if (signal.cancelled) throw new Error("בוטל");
     const res = await ghFetch(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs/${runId}`, cfg);
     if (!res.ok) throw new Error(await ghError(res, "בדיקת סטטוס הריצה נכשלה"));
     const run = await res.json();
-    const steps = run.status === "in_progress" ? await fetchRunStepProgress(cfg, runId).catch(() => null) : null;
+    const steps = run.status === "in_progress" ? await fetchRunProgress(cfg, runId, mode).catch(() => null) : null;
     onTick(run, steps);
     if (run.status === "completed") return run.conclusion;
     await sleep(5000);
@@ -271,6 +308,67 @@ async function findArtifact(cfg, runId, requestId) {
 async function cancelRun(cfg, runId) {
   const res = await ghFetch(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs/${runId}/cancel`, cfg, { method: "POST" });
   return res.ok || res.status === 202;
+}
+
+/* ------------------------------------------------------------ recovery sync */
+
+// chrome.storage.session (where jobs live) doesn't survive a browser restart, and an
+// extension reload during development can wipe it too — but the run itself keeps
+// going on GitHub regardless. This picks up any workflow_dispatch run that's still
+// actually in flight (not tracked locally yet) and re-attaches to it, so reloading
+// the extension mid-download reconnects instead of losing track of it. Runs GitHub
+// itself already finished are deliberately left alone — those were either already
+// saved, or the extension never got the chance to and re-fetching them unprompted
+// would just silently re-save an old file the user didn't ask for again.
+let lastGithubSync = 0;
+async function syncRunsFromGitHub() {
+  const now = Date.now();
+  if (now - lastGithubSync < 15000) return;
+  lastGithubSync = now;
+
+  const cfg = await getConfig();
+  if (!cfg.owner || !cfg.repo || !cfg.token) return;
+
+  try {
+    const res = await ghFetch(`${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs?event=workflow_dispatch&per_page=20`, cfg);
+    if (!res.ok) return;
+    const body = await res.json();
+    let added = false;
+    for (const run of body.workflow_runs || []) {
+      if (run.status === "completed") continue; // only reconnect to runs still in flight
+      const match = /^dl-(.+)$/.exec(run.display_title || run.name || "");
+      if (!match) continue;
+      const requestId = match[1];
+      if (jobs.has(requestId)) continue;
+      // The original mode isn't retrievable after dispatch (GitHub doesn't expose
+      // workflow_dispatch inputs post-hoc), but the job names it actually created do
+      // give it away — collection mode has "enumerate"/"download-item "/"package".
+      const runJobs = await fetchAllRunJobs(cfg, run.id).catch(() => []);
+      const mode = runJobs.some((j) => j.name === "enumerate" || (j.name && j.name.startsWith("download-item ")))
+        ? "collection"
+        : "video";
+      jobs.set(requestId, {
+        id: requestId,
+        requestId,
+        url: "",
+        title: `ריצה משוחזרת (${run.display_title})`,
+        quality: null,
+        mode,
+        status: "running",
+        detail: "התחברתי מחדש לריצה קיימת ב-GitHub…",
+        percent: 15,
+        runId: run.id,
+        startedAt: new Date(run.created_at).getTime() || Date.now(),
+        withCookies: false,
+        files: [],
+        recovered: true
+      });
+      added = true;
+    }
+    if (added) await persistJobs();
+  } catch {
+    /* best effort — a failed sync just means it tries again on the next call */
+  }
 }
 
 /* ------------------------------------------------------ offscreen unzipper */
@@ -406,22 +504,25 @@ async function driveJob(jobId) {
           patchJob(jobId, { detail: "בתור אצל GitHub…", percent: 8 });
           return;
         }
-        if (run.status !== "in_progress" || !steps || !steps.total) {
-          patchJob(jobId, {
-            detail: run.status === "in_progress" ? "רץ ב-GitHub Actions…" : "הריצה הסתיימה",
-            percent: run.status === "in_progress" ? 12 : 55
-          });
+        if (run.status !== "in_progress") {
+          patchJob(jobId, { detail: "הריצה הסתיימה", percent: 55 });
           return;
         }
-        // GitHub only reports whole-step completion, so between two step transitions
-        // there's no real number to show — that's most visible on "Download", which
-        // might be 2 seconds or several minutes of yt-dlp actually fetching, with
-        // nothing in between. Confirmed live: the job's raw logs 404 while it's still
-        // running (GitHub only exposes them once the job completes), so there is no
-        // way to read yt-dlp's own progress output mid-run either. Rather than sit
-        // frozen at one number for however long that step takes, ease the display
-        // toward (but never quite reach) the next step's value once one is known —
-        // an honest "still working" cue, not a fabricated byte-accurate percentage.
+        if (!steps || !steps.total) {
+          // Either no progress signal yet, or (collection mode) still counting items
+          // in the channel/playlist — steps.label carries that "counting…" message.
+          patchJob(jobId, { detail: (steps && steps.label) || "רץ ב-GitHub Actions…", percent: 12 });
+          return;
+        }
+        // GitHub only reports whole-job/whole-step completion, so between two of
+        // those there's no real number to show — most visible on plain video mode's
+        // single "Download" step, which might be 2 seconds or several minutes of
+        // yt-dlp actually fetching, with nothing in between. Confirmed live: the
+        // job's raw logs 404 while it's still running (GitHub only exposes them once
+        // the job completes), so there's no way to read yt-dlp's own progress output
+        // mid-run either. Collection mode gets real per-item granularity instead
+        // (see fetchRunProgress) since each item is its own GitHub job; this easing
+        // only matters there for the time within a single item's own download.
         const base = 10 + Math.floor(45 * (steps.completed / steps.total));
         const next = 10 + Math.floor((45 * Math.min(steps.total, steps.completed + 1)) / steps.total);
         const job = jobs.get(jobId);
@@ -431,7 +532,8 @@ async function driveJob(jobId) {
         const eased = base + (next - base) * (1 - Math.exp(-elapsedSec / 15)) * 0.92;
         patchJob(jobId, { detail: steps.label || "רץ ב-GitHub Actions…", percent: Math.round(eased) });
       },
-      signal
+      signal,
+      job.mode
     );
 
     if (conclusion === "cancelled") {
@@ -578,6 +680,7 @@ async function handle(msg) {
     case "START_DOWNLOAD":
       return startDownload(msg.payload);
     case "LIST_JOBS": {
+      await syncRunsFromGitHub();
       const plain = {};
       for (const [id, job] of jobs) plain[id] = job;
       for (const [id, job] of jobs) if (!TERMINAL.has(job.status)) void driveJob(id);
@@ -667,6 +770,7 @@ chrome.alarms.create("ytproxy-resume", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "ytproxy-resume") return;
   await restoreJobs();
+  await syncRunsFromGitHub();
   for (const [id, job] of jobs) {
     if (!TERMINAL.has(job.status)) void driveJob(id);
   }
