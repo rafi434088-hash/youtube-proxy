@@ -194,32 +194,48 @@
     downloadBtn.disabled = false;
     downloadBtn.textContent = "הורדה";
 
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch(
-        `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`,
-        { signal: controller.signal }
-      );
-      clearTimeout(timeout);
-      if (token !== previewToken) return;
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.title && current && current.videoId === videoId) {
-          current.title = data.title;
-          previewTitle.textContent = data.title;
+    const title = await fetchOembedTitleWithRetry(canonicalUrl, () => token === previewToken);
+    if (token !== previewToken || !current || current.videoId !== videoId) return;
+
+    if (title) {
+      current.title = title;
+      previewTitle.textContent = title;
+    } else {
+      // Still just a cosmetic preview after every retry failed. The saved filename
+      // never comes from here either way — it's always the real title yt-dlp reads
+      // on the GitHub runner, so this has no effect on what the file ends up called.
+      previewTitle.textContent = "אין תצוגה מקדימה לכותרת — שם הקובץ הסופי נקבע בגיטהאב לפי הכותרת האמיתית";
+    }
+  }
+
+  // oEmbed is a best-effort convenience (thumbnail preview only) and it does fail
+  // sometimes — timeouts, transient YouTube errors — so retry a few times with a
+  // short backoff before giving up. `stillWanted()` lets a newer URL in the input
+  // cancel a stale retry early instead of racing it.
+  async function fetchOembedTitleWithRetry(canonicalUrl, stillWanted, attempts = 4) {
+    const delays = [0, 1200, 2500, 4500];
+    for (let i = 0; i < attempts; i += 1) {
+      if (!stillWanted()) return null;
+      if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+      if (!stillWanted()) return null;
+      if (i > 0) previewTitle.textContent = `טוען כותרת… (ניסיון ${i + 1} מתוך ${attempts})`;
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch(
+          `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`,
+          { signal: controller.signal }
+        );
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.title) return data.title;
         }
-      }
-    } catch {
-      /* best effort only — see the fallback text below for why it's harmless */
-    } finally {
-      if (token === previewToken && current && current.videoId === videoId && !current.title) {
-        // This is only a cosmetic preview. The saved filename never comes from here —
-        // it's always the real title yt-dlp reads on the GitHub runner, so a failed
-        // preview here has no effect on what the file ends up called.
-        previewTitle.textContent = "אין תצוגה מקדימה לכותרת — שם הקובץ הסופי נקבע בגיטהאב לפי הכותרת האמיתית";
+      } catch {
+        /* try again below, or give up after the last attempt */
       }
     }
+    return null;
   }
 
   let debounceTimer = null;
@@ -339,7 +355,14 @@
     if (!row) row = buildJobRow(job);
 
     const modeTag = job.mode === "collection" ? " · אוסף" : "";
-    row.title.textContent = (job.title || job.url) + modeTag;
+    // Once the run finishes, the real filename yt-dlp gave it on the GitHub runner is
+    // known — that's always more accurate than the guessed title shown before the
+    // download started (which may have come from a retried, or ultimately failed,
+    // oEmbed preview), so it takes over here too, not just as the saved file's name.
+    const displayTitle =
+      job.status === "completed" && job.files && job.files.length ? job.files.join(", ") : job.title || job.url;
+    row.title.textContent = displayTitle + modeTag;
+    row.title.title = displayTitle;
     row.status.textContent = STATUS_LABELS[job.status] || job.status;
 
     const done = isTerminal(job.status);
