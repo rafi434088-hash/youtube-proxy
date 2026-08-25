@@ -185,65 +185,143 @@ jobs:
         run: |
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet --upgrade yt-dlp cryptography
+          python - <<'PY'
+          import base64, json, os, re, secrets, sys
+          from urllib.parse import urlsplit, urlunsplit
 
-          COOKIE_ARGS=""
-          if [ -n "$COOKIES_ENC" ] && [ -n "$COOKIE_KEY" ]; then
-            python - <<'PY'
-          import base64, os, sys
-          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-          blob = base64.b64decode(os.environ["COOKIES_ENC"])
-          key = bytes.fromhex(os.environ["COOKIE_KEY"].strip())
-          iv, ct = blob[:12], blob[12:]
-          try:
-              data = AESGCM(key).decrypt(iv, ct, None)
-          except Exception:
-              print("::error::cookie decryption failed - COOKIE_KEY in the extension and in the repo secret do not match")
-              sys.exit(1)
-          with open("cookies.txt", "wb") as f:
-              f.write(data)
-          print(f"cookies.txt written ({len(data)} bytes)")
-          PY
-            COOKIE_ARGS="--cookies cookies.txt"
-          fi
+          import yt_dlp
 
-          NAME=$(yt-dlp --flat-playlist --print "%(playlist_title,channel,uploader)s" \
-            --playlist-items 1 $COOKIE_ARGS -- "$TARGET_URL" 2>/dev/null | head -1)
-          # yt-dlp prints the literal string "NA" for a field it can't resolve — not
-          # an empty string, so it needs its own check.
-          if [ -z "$NAME" ] || [ "$NAME" = "NA" ]; then NAME="collection"; fi
-          SAFE_NAME=$(printf '%s' "$NAME" | tr -s ' /\\:*?"<>|' '_' | cut -c1-120)
-          [ -z "$SAFE_NAME" ] && SAFE_NAME="collection"
+          TARGET_URL = os.environ["TARGET_URL"]
+          MAX_ITEMS = 200
 
-          MAX_ITEMS=200
-          LISTING=$(yt-dlp --flat-playlist --print "%(id)s	%(webpage_url,url)s" \
-            $COOKIE_ARGS --playlist-end "$MAX_ITEMS" -- "$TARGET_URL" 2>/dev/null)
-          rm -f cookies.txt
+          cookies_path = None
+          cookies_enc = os.environ.get("COOKIES_ENC", "")
+          cookie_key = os.environ.get("COOKIE_KEY", "")
+          if cookies_enc and cookie_key:
+              from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+              blob = base64.b64decode(cookies_enc)
+              key = bytes.fromhex(cookie_key.strip())
+              iv, ct = blob[:12], blob[12:]
+              try:
+                  data = AESGCM(key).decrypt(iv, ct, None)
+              except Exception:
+                  print("::error::cookie decryption failed - COOKIE_KEY in the extension and in the repo secret do not match")
+                  sys.exit(1)
+              with open("cookies.txt", "wb") as f:
+                  f.write(data)
+              cookies_path = "cookies.txt"
 
-          if [ -z "$LISTING" ]; then
-            echo "::error::no items found at this URL"
-            exit 1
-          fi
-          COUNT=$(printf '%s\n' "$LISTING" | grep -c .)
-          if [ "$COUNT" -ge "$MAX_ITEMS" ]; then
-            echo "::notice::stopping at $MAX_ITEMS items — this collection may have more"
-          fi
-          echo "collection: $SAFE_NAME ($COUNT items)"
+          def safe_name(name, limit=120):
+              name = (name or "").strip()
+              if not name or name == "NA":
+                  return None
+              cleaned = re.sub(r'[ /\\:*?"<>|]+', "_", name)
+              return cleaned[:limit] or None
 
-          JSON=$(printf '%s\n' "$LISTING" | python -c "
-          import sys, json
+          def resolve_url(entry):
+              u = entry.get("url") or entry.get("webpage_url")
+              if not u:
+                  return None
+              if u.startswith("http://") or u.startswith("https://"):
+                  return u
+              return f"https://www.youtube.com/watch?v={u}"
+
+          ydl_opts = {
+              "extract_flat": True,
+              "quiet": True,
+              "no_warnings": True,
+              "skip_download": True,
+              "playlistend": MAX_ITEMS,  # bounds each individual listing call too, not just the total
+          }
+          if cookies_path:
+              ydl_opts["cookiefile"] = cookies_path
+
+          def flat_list(url):
+              with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                  return ydl.extract_info(url, download=False)
+
+          info = flat_list(TARGET_URL)
+          collection_name = (
+              safe_name(info.get("title") or info.get("playlist_title") or info.get("channel") or info.get("uploader"))
+              or "collection"
+          )
+
           items = []
-          for line in sys.stdin:
-              line = line.rstrip('\n')
-              if not line.strip():
-                  continue
-              parts = line.split('\t', 1)
-              if len(parts) == 2:
-                  items.append({'id': parts[0], 'url': parts[1]})
-          print(json.dumps(items))
-          ")
-          echo "items=$JSON" >> "$GITHUB_OUTPUT"
-          echo "name=$SAFE_NAME" >> "$GITHUB_OUTPUT"
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          host = urlsplit(TARGET_URL).netloc.removeprefix("www.").removeprefix("m.")
+          is_youtube = host in ("youtube.com", "music.youtube.com")
+          # The "list its Playlists tab" trick below is YouTube's own URL scheme
+          # (.../playlists) — only try it there. Any other site, or a YouTube URL
+          # that's already a specific playlist (?list=...), gets the flat listing.
+          is_single_playlist = (not is_youtube) or "list=" in TARGET_URL
+
+          def add_entries(entries, album):
+              for e in entries or []:
+                  if not e or len(items) >= MAX_ITEMS:
+                      continue
+                  vid = e.get("id")
+                  url = resolve_url(e)
+                  if vid and url:
+                      items.append({"id": vid, "url": url, "album": album})
+
+          if is_single_playlist:
+              # A specific playlist (or a non-YouTube site) — one flat level, no album split.
+              add_entries(info.get("entries"), "")
+          else:
+              # A channel: list its Playlists tab first, so the zip can mirror how the
+              # channel organizes itself (albums, live sets, ...) instead of one flat
+              # dump. Falls back to the plain video list if it has no playlists.
+              parts = urlsplit(TARGET_URL)
+              segs = [s for s in parts.path.split("/") if s]
+              if segs and segs[0] in ("channel", "c", "user") and len(segs) >= 2:
+                  base = "/" + "/".join(segs[:2])
+              elif segs and segs[0].startswith("@"):
+                  base = "/" + segs[0]
+              else:
+                  base = "/" + segs[0] if segs else ""
+              netloc = parts.netloc or "www.youtube.com"
+              playlists_url = urlunsplit((parts.scheme or "https", netloc, base.rstrip("/") + "/playlists", "", ""))
+
+              playlists = []
+              try:
+                  pl_info = flat_list(playlists_url)
+                  for e in pl_info.get("entries") or []:
+                      if e and e.get("id"):
+                          playlists.append({"id": e["id"], "title": e.get("title") or e["id"]})
+              except Exception:
+                  playlists = []
+
+              if playlists:
+                  for pl in playlists:
+                      if len(items) >= MAX_ITEMS:
+                          break
+                      album = safe_name(pl["title"], limit=80) or pl["id"]
+                      try:
+                          pl_videos = flat_list(f"https://www.youtube.com/playlist?list={pl['id']}")
+                      except Exception:
+                          continue
+                      add_entries(pl_videos.get("entries"), album)
+              else:
+                  add_entries(info.get("entries"), "")
+
+          if os.path.exists("cookies.txt"):
+              os.remove("cookies.txt")
+
+          if not items:
+              print("::error::no items found at this URL")
+              sys.exit(1)
+
+          if len(items) >= MAX_ITEMS:
+              print(f"::notice::stopping at {MAX_ITEMS} items — this collection may have more")
+
+          album_count = len({i["album"] for i in items if i["album"]})
+          print(f"collection: {collection_name} ({len(items)} items, {album_count} albums)")
+
+          delim = f"ghadelim_{secrets.token_hex(8)}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"items<<{delim}\n{json.dumps(items)}\n{delim}\n")
+              f.write(f"name={collection_name}\n")
+              f.write(f"count={len(items)}\n")
+          PY
 
   # --------------------------------------------- collection: one job per item
   # This is also what gives the extension real "X of Y downloaded" progress: GitHub's
@@ -257,7 +335,7 @@ jobs:
     continue-on-error: true # one bad video shouldn't fail the whole collection
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 16 # GitHub's own account-wide concurrent-job ceiling is the real cap
       matrix:
         video: ${{ fromJson(needs.enumerate.outputs.items) }}
     name: download-item ${{ matrix.video.id }}
@@ -307,6 +385,7 @@ jobs:
       - name: Download item
         env:
           ITEM_URL: ${{ matrix.video.url }}
+          ALBUM: ${{ matrix.video.album }}
           QUALITY: ${{ inputs.quality }}
         run: |
           mkdir -p out
@@ -321,6 +400,14 @@ jobs:
           COOKIE_ARGS=""
           if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
 
+          # The channel's own playlists (album, live, singles, ...) become subfolders
+          # inside the final zip — see enumerate's "List collection items" step.
+          if [ -n "$ALBUM" ]; then
+            OUT_TEMPLATE="out/$ALBUM/%(title).100B [%(id)s].%(ext)s"
+          else
+            OUT_TEMPLATE="out/%(title).100B [%(id)s].%(ext)s"
+          fi
+
           yt-dlp \
             $FMT_ARGS \
             $COOKIE_ARGS \
@@ -332,7 +419,7 @@ jobs:
             --embed-metadata \
             --remote-components ejs:github \
             --ffmpeg-location "$FFMPEG_BIN" \
-            -o "out/%(title).100B [%(id)s].%(ext)s" \
+            -o "$OUT_TEMPLATE" \
             -- "$ITEM_URL"
 
       - name: Always drop cookies
@@ -340,7 +427,7 @@ jobs:
         run: rm -f cookies.txt
 
       - name: Upload item artifact
-        if: hashFiles('out/*') != ''
+        if: hashFiles('out/**') != ''
         uses: actions/upload-artifact@v4
         with:
           name: dl-${{ inputs.request_id }}-item-${{ matrix.video.id }}

@@ -61,6 +61,15 @@
       });
       if (!res.ok) return { ok: false, error: `הורדת ה-artifact נכשלה (HTTP ${res.status})` };
 
+      // fetch() follows the redirect itself, and res.url is the URL it actually
+      // landed on — the pre-signed blob-storage link, not api.github.com. That link
+      // needs no Authorization header (see the comment above), so it's exactly what
+      // an external tool like IDM needs; hand it to background.js as soon as it's
+      // known rather than waiting for the whole zip to finish downloading.
+      if (msg.jobId && res.url && res.url !== msg.url) {
+        chrome.runtime.sendMessage({ type: "UNZIP_DIRECT_URL", jobId: msg.jobId, url: res.url }).catch(() => {});
+      }
+
       const totalHeader = res.headers.get("content-length");
       const total = totalHeader ? parseInt(totalHeader, 10) : 0;
       const zipped = await readWithProgress(res.body, total, msg.jobId);

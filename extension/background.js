@@ -743,6 +743,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     return undefined;
   }
+  if (message.type === "UNZIP_DIRECT_URL") {
+    // The extension's own path (fetch → unzip → chrome.downloads) is still what runs
+    // by default; this is only ever an opt-in extra the user can copy for a tool like
+    // IDM instead. It's a pre-signed link, so it stops working once it expires —
+    // typically a short window, not meant to be saved for later.
+    const job = jobs.get(message.jobId);
+    if (job) patchJob(message.jobId, { directUrl: message.url });
+    return undefined;
+  }
   handle(message)
     .then(sendResponse)
     .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));

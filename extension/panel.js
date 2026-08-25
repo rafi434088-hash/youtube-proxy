@@ -384,6 +384,18 @@
     if (job.runId) {
       addAction(row, "פתח את הריצה", false, () => void send({ type: "OPEN_RUN", jobId: job.id }));
     }
+    if (job.directUrl && (job.status === "fetching" || job.status === "saving")) {
+      // Opt-in only — the extension still fetches and saves this itself by default.
+      // This just hands off the same pre-signed link GitHub gave the extension, for
+      // someone who'd rather pull it with IDM or similar instead of waiting here.
+      addAction(row, "העתק קישור ישיר (IDM וכו')", false, async () => {
+        try {
+          await navigator.clipboard.writeText(job.directUrl);
+        } catch {
+          /* clipboard access may need a user gesture; the click itself counts as one */
+        }
+      });
+    }
     if (job.status === "completed") {
       addAction(row, "פתח תיקייה", true, () => void send({ type: "OPEN_DOWNLOADS" }));
     }
