@@ -457,7 +457,7 @@ jobs:
             exit 1
           fi
           (cd merged && zip -r -q "../out/${{ needs.enumerate.outputs.collection_name }}.zip" .)
-          echo "packaged $(ls merged | wc -l) of ${{ needs.enumerate.outputs.item_count }} items"
+          echo "packaged $(find merged -type f | wc -l) of ${{ needs.enumerate.outputs.item_count }} items"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
