@@ -3,3 +3,7 @@ extension/config.js
 
 # Per-account configs (tokens + cookie keys) — never commit
 .configs/
+
+__pycache__/
+build-*/
+*.zip
