@@ -64,7 +64,12 @@ const DEFAULT_CONFIG = {
   get token() {
     return _assembleToken(_TK_CHUNKS, _TK_KEY);
   },
-  cookieKey: ""
+  cookieKey: "",
+  // Where the extension pulls CODE updates from (a public repo hosting the clean
+  // extension). Leave blank to disable auto-update. This is separate from owner/repo
+  // above, which is your personal download backend.
+  updateOwner: "",
+  updateRepo: ""
 };
 
 if (typeof self !== "undefined") self.DEFAULT_CONFIG = DEFAULT_CONFIG;

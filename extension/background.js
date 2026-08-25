@@ -9,7 +9,9 @@ const BUILTIN_CONFIG = {
   workflow: "download.yml",
   ref: "main",
   token: "",
-  cookieKey: ""
+  cookieKey: "",
+  updateOwner: "",
+  updateRepo: ""
 };
 try {
   importScripts("config.js");
@@ -22,13 +24,12 @@ const API = "https://api.github.com";
 const CFG_KEY = "ytproxy_cfg";
 const JOBS_KEY = "ytproxy_jobs";
 
-// Where the extension's own CODE updates come from — deliberately separate from the
-// per-user download backend in config.js (owner/repo). Everyone shares one clean code
-// source; each keeps their own config.js. Only the code is fetched from here, never a
-// config, so no personal data crosses between installs.
-const UPDATE_OWNER = "rafi434088-hash";
-const UPDATE_REPO = "youtube-proxy-downloader";
-const UPDATE_MANIFEST_URL = `https://raw.githubusercontent.com/${UPDATE_OWNER}/${UPDATE_REPO}/main/extension/manifest.json`;
+// The extension's own CODE update source lives in config.js (updateOwner/updateRepo),
+// NOT hardcoded here — so this code file carries no personal identifier and the clean
+// shareable build stays clean. It's read from config so it persists across updates
+// (config.js is never overwritten) and each install can point wherever it likes.
+// Only code is ever fetched from there, never a config, so nothing personal crosses
+// between installs.
 // Native-messaging host that runs update.bat on disk — registered once by
 // install-updater.bat. The extension can't run a local script itself; this is the
 // only sanctioned bridge.
@@ -46,6 +47,8 @@ async function getConfig() {
   cfg.ref = (cfg.ref || "main").trim();
   cfg.token = (cfg.token || "").trim();
   cfg.cookieKey = (cfg.cookieKey || "").trim();
+  cfg.updateOwner = (cfg.updateOwner || "").trim();
+  cfg.updateRepo = (cfg.updateRepo || "").trim();
   return cfg;
 }
 
@@ -724,9 +727,17 @@ function isNewerVersion(remote, local) {
 
 async function checkForUpdate() {
   const local = chrome.runtime.getManifest().version;
+  const cfg = await getConfig();
+  if (!cfg.updateOwner || !cfg.updateRepo) {
+    // No update source configured (e.g. the clean shareable build) — nothing to check.
+    const state = { available: false, local, remote: null, disabled: true, checkedAt: Date.now() };
+    await chrome.storage.local.set({ [UPDATE_STATE_KEY]: state });
+    return { ok: true, ...state };
+  }
+  const manifestUrl = `https://raw.githubusercontent.com/${cfg.updateOwner}/${cfg.updateRepo}/main/extension/manifest.json`;
   try {
     // cache: no-store so a checkout doesn't get a stale CDN copy and miss an update
-    const res = await fetch(UPDATE_MANIFEST_URL, { cache: "no-store" });
+    const res = await fetch(manifestUrl, { cache: "no-store" });
     if (!res.ok) return { ok: false, local };
     const remoteManifest = await res.json();
     const remote = remoteManifest.version;

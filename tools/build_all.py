@@ -17,9 +17,16 @@ written — the scan raises rather than shipping a zip with a token in it.
 
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
+
+# The public code-distribution repo that installs pull updates from. Publishing the
+# current extension here (via --publish) is what makes an update actually reach clients.
+UPDATE_REPO_OWNER = "rafi434088-hash"
+UPDATE_REPO_NAME = "youtube-proxy-downloader"
 
 ROOT = Path(__file__).resolve().parent.parent
 HOME = Path.home()
@@ -124,7 +131,47 @@ def build_share(folder: Path) -> Path:
     return folder
 
 
+def publish_update_repo() -> None:
+    """Push the current clean extension to the public code-distribution repo, so an
+    update actually reaches installed clients. Uses a temp clone and only commits if
+    something changed; extension/config.js is never included."""
+    slug = f"{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}"
+    tmp = Path(tempfile.mkdtemp(prefix="ytpd-publish-"))
+    clone = tmp / UPDATE_REPO_NAME
+    try:
+        subprocess.run(
+            ["gh", "repo", "clone", slug, str(clone)],
+            check=True, capture_output=True, text=True,
+        )
+        dst_ext = clone / "extension"
+        if dst_ext.exists():
+            shutil.rmtree(dst_ext)
+        shutil.copytree(
+            ROOT / "extension", dst_ext,
+            ignore=shutil.ignore_patterns("config.js"),
+        )
+        # config.example.js stays as the template; config.js must never be published.
+        if (dst_ext / "config.js").exists():
+            sys.exit("refusing to publish: config.js present in the staged extension")
+        env = {**__import__("os").environ, "GIT_TERMINAL_PROMPT": "0"}
+        run = lambda *a: subprocess.run(a, cwd=clone, env=env, capture_output=True, text=True)
+        run("git", "add", "-A")
+        status = run("git", "status", "--porcelain").stdout.strip()
+        if not status:
+            print(f"[publish] {slug} already up to date")
+            return
+        run("git", "-c", "user.email=noreply@github.com", "-c", "user.name=youtube-proxy build",
+            "commit", "-q", "-m", "Publish current extension")
+        pushed = run("git", "push", "-q", "origin", "HEAD")
+        if pushed.returncode != 0:
+            sys.exit(f"publish push failed: {pushed.stderr[:400]}")
+        print(f"[publish] pushed current extension to {slug}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> None:
+    publish = "--publish" in sys.argv
     # 1. active install
     mine = build_account("rafi434088-hash", DESKTOP / "הורדה מיוטיוב")
     zip_folder(mine, DOWNLOADS / "youtube-proxy-extension.zip")
@@ -147,6 +194,12 @@ def main() -> None:
     zip_folder(share, DESKTOP / "הורדה מיוטיוב דרך גיטהאב.zip")
     print(f"[3] shareable       -> {share}  (secret scan passed)")
     print(f"                    -> {DESKTOP / 'הורדה מיוטיוב דרך גיטהאב.zip'}")
+
+    # 4. publish to the update source repo (only with --publish, since it pushes)
+    if publish:
+        publish_update_repo()
+    else:
+        print("[publish] skipped (pass --publish to push the update source repo)")
 
 
 if __name__ == "__main__":

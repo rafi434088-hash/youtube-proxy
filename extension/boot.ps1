@@ -12,8 +12,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$owner = "rafi434088-hash"
-$repo  = "youtube-proxy-downloader"
+# The update source is read from config.js (updateOwner/updateRepo), not hardcoded, so
+# this script carries no personal identifier and the clean shareable copy stays clean.
 $branch = "main"
 # Create the work dir before anything logs — update.bat normally makes it, but boot.ps1
 # must stand on its own (e.g. run directly), so don't assume it already exists.
@@ -34,6 +34,21 @@ try {
   if (-not (Test-Path -LiteralPath (Join-Path $ExtDir "manifest.json"))) {
     throw "target does not look like the extension folder (no manifest.json): $ExtDir"
   }
+
+  # Read the update source from the local config.js (never overwritten by updates).
+  $cfgPath = Join-Path $ExtDir "config.js"
+  if (-not (Test-Path -LiteralPath $cfgPath)) {
+    throw "config.js not found - set up the extension first"
+  }
+  $cfgText = Get-Content -LiteralPath $cfgPath -Raw
+  $mOwner = [regex]::Match($cfgText, 'updateOwner:\s*"([^"]*)"')
+  $mRepo  = [regex]::Match($cfgText, 'updateRepo:\s*"([^"]*)"')
+  $owner = $mOwner.Groups[1].Value
+  $repo  = $mRepo.Groups[1].Value
+  if (-not $owner -or -not $repo) {
+    throw "no update source in config.js (updateOwner/updateRepo are empty)"
+  }
+  Log "update source: $owner/$repo"
 
   $zip  = Join-Path $work "src.zip"
   $ex   = Join-Path $work "extract"
