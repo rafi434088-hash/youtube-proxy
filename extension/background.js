@@ -284,15 +284,23 @@ function saveBlob(blobUrl, filename) {
         reject(new Error((chrome.runtime.lastError && chrome.runtime.lastError.message) || "השמירה נכשלה"));
         return;
       }
+      const settle = (state) => {
+        chrome.downloads.onChanged.removeListener(listener);
+        revokeBlob(blobUrl);
+        if (state === "complete") resolve(downloadId);
+        else reject(new Error("ההורדה למחשב הופסקה"));
+      };
       const listener = (delta) => {
         if (delta.id !== downloadId || !delta.state) return;
         if (delta.state.current !== "complete" && delta.state.current !== "interrupted") return;
-        chrome.downloads.onChanged.removeListener(listener);
-        revokeBlob(blobUrl);
-        if (delta.state.current === "complete") resolve(downloadId);
-        else reject(new Error("ההורדה למחשב הופסקה"));
+        settle(delta.state.current);
       };
       chrome.downloads.onChanged.addListener(listener);
+      // A small file can finish before the listener is attached, so check once.
+      chrome.downloads.search({ id: downloadId }, (items) => {
+        const state = items && items[0] && items[0].state;
+        if (state === "complete" || state === "interrupted") settle(state);
+      });
     });
   });
 }
