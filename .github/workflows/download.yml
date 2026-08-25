@@ -1,0 +1,125 @@
+name: download
+run-name: dl-${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: 'Unique download id (used for run-name + artifact name)'
+        required: true
+        type: string
+      url:
+        description: 'Video / page URL'
+        required: true
+        type: string
+      quality:
+        description: 'best | 1080 | 720 | 480 | audio'
+        required: false
+        default: 'best'
+        type: string
+      cookies_enc:
+        description: 'AES-256-GCM encrypted cookies.txt, base64 (iv|ct|tag). Leave empty for none.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dl-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Validate request id
+        run: |
+          case "${{ inputs.request_id }}" in
+            *[!a-zA-Z0-9-]*|"") echo "::error::request_id must be [a-zA-Z0-9-] only"; exit 1;;
+          esac
+
+      - name: Install yt-dlp + ffmpeg
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet --upgrade yt-dlp cryptography
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          yt-dlp --version
+          ffmpeg -version | head -1
+
+      - name: Decrypt cookies
+        if: ${{ inputs.cookies_enc != '' }}
+        env:
+          COOKIES_ENC: ${{ inputs.cookies_enc }}
+          COOKIE_KEY: ${{ secrets.COOKIE_KEY }}
+        run: |
+          if [ -z "$COOKIE_KEY" ]; then
+            echo "::error::repository secret COOKIE_KEY is missing"
+            exit 1
+          fi
+          python - <<'PY'
+          import base64, os, sys
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          blob = base64.b64decode(os.environ["COOKIES_ENC"])
+          key = bytes.fromhex(os.environ["COOKIE_KEY"].strip())
+          iv, ct = blob[:12], blob[12:]
+          try:
+              data = AESGCM(key).decrypt(iv, ct, None)
+          except Exception:
+              print("::error::cookie decryption failed - COOKIE_KEY in the extension and in the repo secret do not match")
+              sys.exit(1)
+          with open("cookies.txt", "wb") as f:
+              f.write(data)
+          print(f"cookies.txt written ({len(data)} bytes)")
+          PY
+
+      - name: Download
+        env:
+          TARGET_URL: ${{ inputs.url }}
+          QUALITY: ${{ inputs.quality }}
+        run: |
+          mkdir -p out
+          case "$QUALITY" in
+            audio) FMT_ARGS="-f bestaudio/best -x --audio-format mp3 --audio-quality 0" ;;
+            1080)  FMT_ARGS="-f bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b --merge-output-format mp4" ;;
+            720)   FMT_ARGS="-f bv*[height<=720]+ba/b[height<=720]/bv*+ba/b --merge-output-format mp4" ;;
+            480)   FMT_ARGS="-f bv*[height<=480]+ba/b[height<=480]/bv*+ba/b --merge-output-format mp4" ;;
+            *)     FMT_ARGS="-f bv*+ba/b --merge-output-format mp4" ;;
+          esac
+
+          COOKIE_ARGS=""
+          if [ -f cookies.txt ]; then COOKIE_ARGS="--cookies cookies.txt"; fi
+
+          yt-dlp \
+            $FMT_ARGS \
+            $COOKIE_ARGS \
+            --no-playlist \
+            --no-progress \
+            --newline \
+            --retries 5 \
+            --fragment-retries 10 \
+            --embed-metadata \
+            -o "out/%(title).120B [%(id)s].%(ext)s" \
+            -- "$TARGET_URL"
+
+          rm -f cookies.txt
+          ls -la out
+
+      - name: Always drop cookies
+        if: always()
+        run: rm -f cookies.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dl-${{ inputs.request_id }}
+          path: out/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0

@@ -1,0 +1,2 @@
+# Holds the GitHub token and the cookie encryption key — never commit it.
+extension/config.js
