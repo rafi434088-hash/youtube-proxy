@@ -422,65 +422,55 @@ function revokeBlob(blobUrl) {
   chrome.runtime.sendMessage({ target: "offscreen", type: "REVOKE", blobUrl }).catch(() => {});
 }
 
-// The download itself is started from the offscreen document, not from here. The blob
-// is created there, and chrome.downloads.download() called from the service worker
-// can't resolve a blob owned by another context — it silently ignores the filename we
-// pass and names the file after the blob's UUID instead (observed: files landing as
-// "77af3074-3e50-499b-bd61-6fec5b7de212", no extension). Issuing the call from the
-// document that owns the blob is what makes the filename stick.
+// This has to run in the service worker: offscreen documents are restricted to the
+// chrome.runtime APIs, so chrome.downloads is undefined there — trying to start the
+// download from the document that owns the blob throws outright.
 //
-// Progress and completion are still tracked here: downloads are browser-global, so the
-// id returned from offscreen works with downloads.search/onChanged either way.
-// onProgress(bytesReceived, totalBytes) is polled rather than driven by onChanged,
-// since onChanged only fires on state transitions, not on every byte-count update.
-async function saveBlob(blobUrl, filename, onProgress) {
-  await ensureOffscreen();
-  const started = await chrome.runtime.sendMessage({
-    target: "offscreen",
-    type: "SAVE_BLOB",
-    blobUrl,
-    filename
-  });
-  if (!started || !started.ok || started.downloadId === undefined) {
-    throw new Error((started && started.error) || "השמירה נכשלה");
-  }
-  const downloadId = started.downloadId;
-
+// onProgress(bytesReceived, totalBytes) is polled from chrome.downloads.search rather
+// than driven by onChanged, since onChanged only fires on state transitions, not on
+// every byte-count update — polling is the only way to get a moving number here.
+function saveBlob(blobUrl, filename, onProgress) {
   return new Promise((resolve, reject) => {
-    const pollTimer = setInterval(() => {
-      chrome.downloads.search({ id: downloadId }, (items) => {
-        const item = items && items[0];
-        if (item && item.state === "in_progress" && onProgress) {
-          onProgress(item.bytesReceived || 0, item.totalBytes || item.fileSize || 0);
-        }
-      });
-    }, 400);
-    const settle = (state) => {
-      clearInterval(pollTimer);
-      chrome.downloads.onChanged.removeListener(listener);
-      revokeBlob(blobUrl);
-      if (state !== "complete") {
-        reject(new Error("ההורדה למחשב הופסקה"));
+    chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, (downloadId) => {
+      if (chrome.runtime.lastError || downloadId === undefined) {
+        reject(new Error((chrome.runtime.lastError && chrome.runtime.lastError.message) || "השמירה נכשלה"));
         return;
       }
-      if (onProgress) onProgress(1, 1);
-      // Report back the name Chrome actually wrote, not the one we asked for, so a
-      // rename is visible rather than hidden behind the string we hoped for.
+      const pollTimer = setInterval(() => {
+        chrome.downloads.search({ id: downloadId }, (items) => {
+          const item = items && items[0];
+          if (item && item.state === "in_progress" && onProgress) {
+            onProgress(item.bytesReceived || 0, item.totalBytes || item.fileSize || 0);
+          }
+        });
+      }, 400);
+      const settle = (state) => {
+        clearInterval(pollTimer);
+        chrome.downloads.onChanged.removeListener(listener);
+        revokeBlob(blobUrl);
+        if (state !== "complete") {
+          reject(new Error("ההורדה למחשב הופסקה"));
+          return;
+        }
+        if (onProgress) onProgress(1, 1);
+        // Report back the name Chrome actually wrote, not the one we asked for, so a
+        // rename is visible rather than hidden behind the string we hoped for.
+        chrome.downloads.search({ id: downloadId }, (items) => {
+          const actual = items && items[0] && items[0].filename;
+          resolve(actual ? actual.split(/[\\/]/).pop() : null);
+        });
+      };
+      const listener = (delta) => {
+        if (delta.id !== downloadId || !delta.state) return;
+        if (delta.state.current !== "complete" && delta.state.current !== "interrupted") return;
+        settle(delta.state.current);
+      };
+      chrome.downloads.onChanged.addListener(listener);
+      // A small file can finish before the listener is attached, so check once.
       chrome.downloads.search({ id: downloadId }, (items) => {
-        const actual = items && items[0] && items[0].filename;
-        resolve(actual ? actual.split(/[\\/]/).pop() : null);
+        const state = items && items[0] && items[0].state;
+        if (state === "complete" || state === "interrupted") settle(state);
       });
-    };
-    const listener = (delta) => {
-      if (delta.id !== downloadId || !delta.state) return;
-      if (delta.state.current !== "complete" && delta.state.current !== "interrupted") return;
-      settle(delta.state.current);
-    };
-    chrome.downloads.onChanged.addListener(listener);
-    // A small file can finish before the listener is attached, so check once.
-    chrome.downloads.search({ id: downloadId }, (items) => {
-      const state = items && items[0] && items[0].state;
-      if (state === "complete" || state === "interrupted") settle(state);
     });
   });
 }

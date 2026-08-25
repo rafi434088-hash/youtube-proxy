@@ -93,23 +93,6 @@
       unzipArtifact(message).then(sendResponse);
       return true;
     }
-    if (message.type === "SAVE_BLOB") {
-      // Started here rather than in the service worker on purpose: this document owns
-      // the blob, and a download started from a context that doesn't own it loses the
-      // filename entirely — Chrome falls back to naming the file after the blob UUID.
-      chrome.downloads.download(
-        { url: message.blobUrl, filename: message.filename, saveAs: false },
-        (downloadId) => {
-          const err = chrome.runtime.lastError;
-          if (err || downloadId === undefined) {
-            sendResponse({ ok: false, error: (err && err.message) || "השמירה נכשלה" });
-            return;
-          }
-          sendResponse({ ok: true, downloadId });
-        }
-      );
-      return true;
-    }
     if (message.type === "REVOKE") {
       try {
         URL.revokeObjectURL(message.blobUrl);
