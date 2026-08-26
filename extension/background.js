@@ -254,7 +254,9 @@ async function dispatchWorkflow(cfg, inputs) {
 async function findRun(cfg, requestId, signal) {
   const target = `dl-${requestId}`;
   const url = `${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs?event=workflow_dispatch&per_page=40`;
-  for (let i = 0; i < 40; i += 1) {
+  // Poll fast for the first ~16s (the run usually appears within a few seconds), then
+  // ease off. Much snappier than the old flat 3s, which lagged well behind the browser.
+  for (let i = 0; i < 70; i += 1) {
     if (signal.cancelled) throw new Error("בוטל");
     const res = await ghFetch(url, cfg);
     if (res.ok) {
@@ -262,7 +264,7 @@ async function findRun(cfg, requestId, signal) {
       const match = (body.workflow_runs || []).find((r) => r.display_title === target || r.name === target);
       if (match) return match.id;
     }
-    await sleep(3000);
+    await sleep(i < 20 ? 800 : 2000);
   }
   throw new Error("הריצה לא נמצאה תוך שתי דקות — בדקו בטאב Actions בריפו");
 }
@@ -799,10 +801,30 @@ async function checkForUpdate() {
     const available = Boolean(remote) && isNewerVersion(remote, local);
     const state = { available, local, remote: remote || null, checkedAt: Date.now() };
     await chrome.storage.local.set({ [UPDATE_STATE_KEY]: state });
+    if (available) void maybeAutoUpdate();
     return { ok: true, ...state };
   } catch {
     return { ok: false, local };
   }
+}
+
+let autoUpdateAt = 0;
+function hasActiveJobs() {
+  for (const job of jobs.values()) {
+    if (!TERMINAL.has(job.status)) return true;
+  }
+  return false;
+}
+
+// Applies an available update on its own — no button press needed. Held back only
+// while a download is in flight (a reload would kill it) and rate-limited so a failed
+// attempt (e.g. the native host isn't installed yet) doesn't retry in a tight loop.
+// If it can't run, the panel banner still offers the manual button as a fallback.
+async function maybeAutoUpdate() {
+  if (hasActiveJobs()) return;
+  if (Date.now() - autoUpdateAt < 5 * 60 * 1000) return;
+  autoUpdateAt = Date.now();
+  await runUpdate(); // reloads the extension itself on success
 }
 
 async function getUpdateState() {

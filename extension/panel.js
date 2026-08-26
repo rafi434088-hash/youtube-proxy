@@ -517,7 +517,11 @@
   async function refreshUpdateBanner() {
     const state = await send({ type: "GET_UPDATE_STATE" });
     if (state && state.available) {
-      updateText.textContent = `יש גרסה חדשה (${state.remote}) — מותקנת ${state.local}`;
+      // Updates apply on their own; the banner is just an FYI, with the button as a
+      // manual fallback for when the auto-update can't run (native host not installed).
+      updateText.textContent = `גרסה חדשה (${state.remote}) — מתעדכן אוטומטית`;
+      updateBtn.textContent = "עדכן עכשיו";
+      updateBtn.disabled = false;
       updateBanner.hidden = false;
     } else {
       updateBanner.hidden = true;
