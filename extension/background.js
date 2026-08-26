@@ -346,7 +346,7 @@ async function fetchRunProgress(cfg, runId, mode) {
     const packaging = allJobs.some((j) => j.name === "package" && j.status !== "queued");
     const label = packaging
       ? "אורז הכל ל-ZIP אחד…"
-      : `${succeeded} מתוך ${items.length} פריטים ירדו` + (failed ? ` (${failed} נכשלו)` : "");
+      : `${succeeded} מתוך ${items.length} חלקים ירדו` + (failed ? ` (${failed} נכשלו)` : "");
     return { total: items.length, completed: succeeded + failed, label };
   }
 
