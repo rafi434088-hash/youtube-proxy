@@ -96,6 +96,22 @@
     return false;
   }
 
+  // Split a paste into individual http(s) URLs (newlines, spaces, commas), de-duped.
+  // A single-line <input> turns pasted newlines into spaces, so splitting on any
+  // whitespace covers both one-per-line and space-separated pastes.
+  function parseUrls(raw) {
+    const seen = new Set();
+    const out = [];
+    for (const part of String(raw).split(/[\s,]+/)) {
+      const u = part.trim();
+      if (u && isHttpUrl(u) && !seen.has(u)) {
+        seen.add(u);
+        out.push(u);
+      }
+    }
+    return out;
+  }
+
   function isHttpUrl(raw) {
     try {
       const url = new URL(raw.trim());
@@ -163,7 +179,9 @@
       return;
     }
 
-    if (!isHttpUrl(raw)) {
+    const urls = parseUrls(raw);
+
+    if (urls.length === 0) {
       urlHint.textContent = "זה לא נראה כמו קישור תקין";
       urlHint.classList.add("is-fail");
       downloadBtn.disabled = true;
@@ -174,15 +192,28 @@
       return;
     }
 
+    // Multiple links pasted at once: no single preview, each downloads on its own.
+    if (urls.length > 1) {
+      urlHint.textContent = `${urls.length} קישורים — כל אחד יורד בנפרד`;
+      urlHint.classList.remove("is-fail");
+      resetPreview();
+      setCollectionState(false); // the collection toggle is for one channel/playlist
+      current = { multi: urls };
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = `הורד ${urls.length}`;
+      return;
+    }
+
+    const single = urls[0];
     urlHint.textContent = " ";
     urlHint.classList.remove("is-fail");
-    setCollectionState(detectCollection(raw));
+    setCollectionState(detectCollection(single));
 
-    const videoId = extractVideoId(raw);
+    const videoId = extractVideoId(single);
     if (!videoId) {
       // yt-dlp handles far more than YouTube (and channel/playlist pages don't
       // resolve to a single video id either); anything else just skips the preview.
-      current = { url: raw.trim(), videoId: null, title: null };
+      current = { url: single, videoId: null, title: null };
       resetPreview();
       downloadBtn.disabled = false;
       downloadBtn.textContent = "הורדה";
@@ -277,24 +308,44 @@
   settingsBtn.addEventListener("click", openOptions);
   setupBtn.addEventListener("click", openOptions);
 
-  downloadBtn.addEventListener("click", () => {
+  downloadBtn.addEventListener("click", async () => {
     if (!current) return;
+    const quality = PRESETS[formatSelect.value].quality;
+
+    if (current.multi) {
+      // One job per pasted link. Each is its own dispatch, so they run in parallel and
+      // land as separate rows; a bad link fails only itself.
+      const urls = current.multi;
+      let started = 0;
+      for (const url of urls) {
+        if (await startDownload({ url, title: null, quality, mode: "video" }, true)) started += 1;
+      }
+      urlInput.value = "";
+      await validateAndPreview();
+      urlHint.textContent = `נשלחו ${started} מתוך ${urls.length} — ראו ברשימת ההורדות`;
+      urlHint.classList.remove("is-fail");
+      return;
+    }
+
     void startDownload({
       url: current.url,
       title: current.title,
-      quality: PRESETS[formatSelect.value].quality,
+      quality,
       mode: collectionToggle.checked ? "collection" : "video"
     });
   });
 
-  async function startDownload(input) {
+  async function startDownload(input, quiet) {
     const res = await send({ type: "START_DOWNLOAD", payload: input });
     if (!res || !res.ok) {
-      urlHint.textContent = (res && res.error) || "ההורדה נכשלה";
-      urlHint.classList.add("is-fail");
-      return;
+      if (!quiet) {
+        urlHint.textContent = (res && res.error) || "ההורדה נכשלה";
+        urlHint.classList.add("is-fail");
+      }
+      return false;
     }
     void refreshJobs();
+    return true;
   }
 
   /* ------------------------------------------------------------- job list */
