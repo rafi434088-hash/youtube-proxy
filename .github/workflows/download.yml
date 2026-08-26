@@ -189,10 +189,12 @@ jobs:
         run: |
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" --title "$TAG" --notes "Automated download - safe to delete."
-          # Upload each file by exact path (find, not a glob) so names with spaces or
-          # [brackets] - which yt-dlp puts the video id in - upload correctly.
+          # gh treats each asset arg as a glob pattern, so yt-dlp's [id] brackets (and any
+          # * ? in a title) match nothing -> "no matches found". Escape those metachars so
+          # gh matches the literal file. find handles spaces; sed backslash-escapes globs.
           find out -type f -print0 | while IFS= read -r -d '' f; do
-            gh release upload "$TAG" "$f" --clobber
+            esc=$(printf '%s' "$f" | sed 's/[][*?\\]/\\&/g')
+            gh release upload "$TAG" "$esc" --clobber
           done
           # Keep the Releases page tidy: drop auto bundles beyond the newest 25.
           # Wrapped so an empty list (grep exit 1 under pipefail) never fails the job.
@@ -631,10 +633,12 @@ jobs:
         run: |
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" --title "$TAG" --notes "Automated download - safe to delete."
-          # Upload each file by exact path (find, not a glob) so names with spaces or
-          # [brackets] - which yt-dlp puts the video id in - upload correctly.
+          # gh treats each asset arg as a glob pattern, so yt-dlp's [id] brackets (and any
+          # * ? in a title) match nothing -> "no matches found". Escape those metachars so
+          # gh matches the literal file. find handles spaces; sed backslash-escapes globs.
           find out -type f -print0 | while IFS= read -r -d '' f; do
-            gh release upload "$TAG" "$f" --clobber
+            esc=$(printf '%s' "$f" | sed 's/[][*?\\]/\\&/g')
+            gh release upload "$TAG" "$esc" --clobber
           done
           # Keep the Releases page tidy: drop auto bundles beyond the newest 25.
           # Wrapped so an empty list (grep exit 1 under pipefail) never fails the job.
