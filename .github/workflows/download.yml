@@ -329,7 +329,7 @@ jobs:
               os.remove("cookies.txt")
 
           if not items:
-              print("::error::no items found at this URL")
+              print("::error::this channel or playlist has no public videos to download (it may be empty, or its content needs sign-in)")
               sys.exit(1)
 
           if len(items) >= MAX_ITEMS:

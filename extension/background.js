@@ -275,6 +275,27 @@ async function fetchAllRunJobs(cfg, runId) {
 // this can exist: GitHub's API reports whole-job completion, so counting how many of
 // those per-item jobs are done gives real "X of Y downloaded" progress — something no
 // single step, however it's split up, can ever expose while it's still running.
+// Pulls the actual ::error:: message a failed run printed (GitHub surfaces those as
+// check-run annotations), so the extension can show "this channel has no videos"
+// instead of a bare "run failed — open Actions". Best effort; returns null on any hitch.
+async function fetchRunErrorMessage(cfg, runId) {
+  try {
+    const jobsList = await fetchAllRunJobs(cfg, runId);
+    for (const job of jobsList) {
+      if (job.conclusion && job.conclusion !== "success" && job.check_run_url) {
+        const res = await ghFetch(`${job.check_run_url}/annotations`, cfg);
+        if (!res.ok) continue;
+        const annotations = await res.json();
+        const failure = (annotations || []).find((a) => a.annotation_level === "failure") || annotations[0];
+        if (failure && failure.message) return failure.message.trim();
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+  return null;
+}
+
 async function fetchRunProgress(cfg, runId, mode) {
   const allJobs = await fetchAllRunJobs(cfg, runId);
   if (!allJobs.length) return null;
@@ -598,7 +619,8 @@ async function driveJob(jobId) {
       return;
     }
     if (conclusion !== "success") {
-      throw new Error(`הריצה נכשלה (${conclusion || "ללא מסקנה"}) — פתחו את הריצה ב-Actions לפירוט`);
+      const reason = await fetchRunErrorMessage(cfg, jobs.get(jobId).runId);
+      throw new Error(reason || `הריצה נכשלה (${conclusion || "ללא מסקנה"}) — פתחו את הריצה ב-Actions לפירוט`);
     }
 
     patchJob(jobId, { status: "fetching", detail: "מושך את הקובץ מ-GitHub…", percent: 55 });
