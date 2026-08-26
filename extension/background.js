@@ -251,22 +251,48 @@ async function dispatchWorkflow(cfg, inputs) {
 
 // The run is matched by its run-name (dl-<requestId>), which the workflow builds
 // from the request_id input. That is what keeps parallel downloads from crossing.
-async function findRun(cfg, requestId, signal) {
+async function findRun(cfg, requestId, signal, dispatchedAt) {
   const target = `dl-${requestId}`;
   const url = `${API}/repos/${cfg.owner}/${cfg.repo}/actions/runs?event=workflow_dispatch&per_page=40`;
-  // Poll fast for the first ~16s (the run usually appears within a few seconds), then
-  // ease off. Much snappier than the old flat 3s, which lagged well behind the browser.
-  for (let i = 0; i < 70; i += 1) {
+  // GitHub only evaluates run-name (our "dl-<id>" title) once a run actually STARTS —
+  // while it sits queued its title is just the workflow name ("download"). So matching
+  // on the title alone finds nothing until GitHub schedules the run, and when GitHub is
+  // slow that produced a bogus "run not found" for a run that existed and was fine.
+  // Confirmed live: a queued run reported display_title "download" and only became
+  // "dl-diag-coll-1" after it started, ~90s later.
+  //
+  // So: prefer the exact title (unambiguous), and otherwise adopt a not-yet-completed
+  // run of this workflow created after we dispatched that no other job has claimed.
+  const since = (dispatchedAt || Date.now()) - 20000;
+  for (let i = 0; i < 200; i += 1) {
     if (signal.cancelled) throw new Error("בוטל");
     const res = await ghFetch(url, cfg);
     if (res.ok) {
       const body = await res.json();
-      const match = (body.workflow_runs || []).find((r) => r.display_title === target || r.name === target);
-      if (match) return match.id;
+      const runs = body.workflow_runs || [];
+      const exact = runs.find((r) => r.display_title === target || r.name === target);
+      if (exact) return exact.id;
+      // Ignore runs another job is already tracking, so two parallel downloads can
+      // never be attached to each other's run.
+      const taken = new Set(
+        Array.from(jobs.values())
+          .map((j) => j.runId)
+          .filter(Boolean)
+      );
+      const candidates = runs.filter(
+        (r) =>
+          !taken.has(r.id) &&
+          r.status !== "completed" &&
+          (r.path || "").endsWith(cfg.workflow) &&
+          new Date(r.created_at).getTime() >= since
+      );
+      // Only adopt when exactly one candidate fits — ambiguity means we keep waiting
+      // for the title instead of guessing.
+      if (candidates.length === 1) return candidates[0].id;
     }
-    await sleep(i < 20 ? 800 : 2000);
+    await sleep(i < 20 ? 800 : 2500);
   }
-  throw new Error("הריצה לא נמצאה תוך שתי דקות — בדקו בטאב Actions בריפו");
+  throw new Error("הריצה לא נמצאה — בדקו בטאב Actions בריפו");
 }
 
 // Hebrew labels for the workflow's own step names, so "synced with GitHub" reads as
@@ -622,8 +648,8 @@ async function driveJob(jobId) {
     const cfg = await getConfig();
 
     if (!job.runId) {
-      patchJob(jobId, { status: "queued", detail: "מחפש את הריצה ב-Actions…", percent: 5 });
-      const runId = await findRun(cfg, job.requestId, signal);
+      patchJob(jobId, { status: "queued", detail: "ממתין שגיטהאב יתחיל את הריצה…", percent: 5 });
+      const runId = await findRun(cfg, job.requestId, signal, job.dispatchedAt);
       patchJob(jobId, { runId });
     }
 
@@ -792,6 +818,10 @@ async function startDownload(payload) {
     percent: 2,
     runId: null,
     startedAt: Date.now(),
+    // Stamped before the dispatch call so findRun can tell "a run created after we
+    // asked" from older runs, and adopt ours while it is still queued (GitHub does not
+    // set the dl-<id> title until the run starts).
+    dispatchedAt: Date.now(),
     withCookies: Boolean(cookiesEnc),
     files: []
   });
