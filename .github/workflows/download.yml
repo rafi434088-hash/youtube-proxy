@@ -620,11 +620,20 @@ jobs:
           TAG: dl-${{ inputs.request_id }}
         run: |
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" out/* --title "$TAG" --notes "Automated download - safe to delete."
-          gh release list --limit 200 --json tagName,createdAt \
-            --jq 'sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null \
-            | grep '^dl-' | tail -n +26 \
-            | while read -r old; do gh release delete "$old" --yes --cleanup-tag 2>/dev/null || true; done
+          gh release create "$TAG" --title "$TAG" --notes "Automated download - safe to delete."
+          # Upload each file by exact path (find, not a glob) so names with spaces or
+          # [brackets] - which yt-dlp puts the video id in - upload correctly.
+          find out -type f -print0 | while IFS= read -r -d '' f; do
+            gh release upload "$TAG" "$f" --clobber
+          done
+          # Keep the Releases page tidy: drop auto bundles beyond the newest 25.
+          # Wrapped so an empty list (grep exit 1 under pipefail) never fails the job.
+          {
+            gh release list --limit 200 --json tagName,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null \
+              | grep '^dl-' | tail -n +26 \
+              | while read -r old; do gh release delete "$old" --yes --cleanup-tag 2>/dev/null || true; done
+          } || true
 
       - name: Upload artifact (fallback for non-Netfree / private repos)
         uses: actions/upload-artifact@v4
