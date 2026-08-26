@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Proxy",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "מוריד סרטונים וערוצים שלמים דרך GitHub Actions: התוסף שולח את הקישור והעוגיות לוורקפלואו, ומושך את התוצאה חזרה למחשב.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtGgzWBf2UKSDzynyY6WaPxoK1v3qGpbvqYufEz0YAH4dKHQMucbetsIfMg/QGAA4Km54TIu97Nr1VJfP0q+0++QOpDgO3XWbMFasny4QE091ucrcyfln81uAIVCEJEgc1pDcULlr4B4mKn47tu3FYTq8Miswyknu3TQjH6q+J2uAiM7+g6Z8Z4+wZnOGumc1fqMXIrGA78+NS/XArT2nHwpme45fDbwDo8FnaQ+JKcYBIkdJ0d/vzLrd8cCPnBMrfBZHtSdFBlAW/HeRhUUCVw9IqFEncIFGsCYLzIESZYHm7hBSDWf0TtKYT7qG3iPTtpoV5Tpa4c4mD6vaCVsiUwIDAQAB",
   "icons": {

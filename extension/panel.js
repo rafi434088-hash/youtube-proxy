@@ -192,9 +192,10 @@
       return;
     }
 
-    // Multiple links pasted at once: no single preview, each downloads on its own.
+    // Multiple links pasted at once: no single preview; they download together in one
+    // batched run and arrive as a single ZIP.
     if (urls.length > 1) {
-      urlHint.textContent = `${urls.length} קישורים — כל אחד יורד בנפרד`;
+      urlHint.textContent = `${urls.length} קישורים — יורדים יחד ונארזים ל-ZIP אחד`;
       urlHint.classList.remove("is-fail");
       resetPreview();
       setCollectionState(false); // the collection toggle is for one channel/playlist
@@ -313,17 +314,17 @@
     const quality = PRESETS[formatSelect.value].quality;
 
     if (current.multi) {
-      // One job per pasted link. Each is its own dispatch, so they run in parallel and
-      // land as separate rows; a bad link fails only itself.
+      // All pasted links go into ONE batched run (like a channel): the workflow spreads
+      // them across ~20 parallel jobs and packs the results into a single ZIP — far fewer
+      // runner setups than a separate run per link.
       const urls = current.multi;
-      let started = 0;
-      for (const url of urls) {
-        if (await startDownload({ url, title: null, quality, mode: "video" }, true)) started += 1;
+      const ok = await startDownload({ urls, title: null, quality, mode: "list" });
+      if (ok) {
+        urlInput.value = "";
+        await validateAndPreview();
+        urlHint.textContent = `${urls.length} קישורים נשלחו כהורדה אחת — ראו ברשימת ההורדות`;
+        urlHint.classList.remove("is-fail");
       }
-      urlInput.value = "";
-      await validateAndPreview();
-      urlHint.textContent = `נשלחו ${started} מתוך ${urls.length} — ראו ברשימת ההורדות`;
-      urlHint.classList.remove("is-fail");
       return;
     }
 

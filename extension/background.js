@@ -332,12 +332,12 @@ async function fetchRunProgress(cfg, runId, mode) {
   const allJobs = await fetchAllRunJobs(cfg, runId);
   if (!allJobs.length) return null;
 
-  if (mode === "collection") {
+  if (mode === "collection" || mode === "list") {
     const items = allJobs.filter((j) => j.name && j.name.startsWith("download-item "));
     if (!items.length) {
       const enumJob = allJobs.find((j) => j.name === "enumerate");
       if (!enumJob || enumJob.status !== "completed") {
-        return { total: 0, completed: 0, label: "סופר כמה פריטים יש בערוץ…" };
+        return { total: 0, completed: 0, label: mode === "list" ? "מתכנן את ההורדות…" : "סופר כמה פריטים יש בערוץ…" };
       }
       return null;
     }
@@ -718,13 +718,31 @@ async function startDownload(payload) {
     }
   }
 
-  const mode = payload.mode === "collection" ? "collection" : "video";
+  const mode =
+    payload.mode === "collection" ? "collection" : payload.mode === "list" ? "list" : "video";
+
+  // list mode: several explicit URLs downloaded together in one batched run (like a
+  // channel). The workflow reads them from the `urls` input; `url` still carries a
+  // representative one because that input is required.
+  let urlsJson = "";
+  let repUrl = payload.url;
+  if (mode === "list") {
+    const list = (payload.urls || []).map((u) => String(u).trim()).filter(Boolean);
+    if (!list.length) return { ok: false, error: "לא התקבלו קישורים" };
+    urlsJson = JSON.stringify(list);
+    repUrl = list[0];
+    if (urlsJson.length > 60000) {
+      return { ok: false, error: "יותר מדי קישורים בבת אחת — פצלו לכמה הורדות ונסו שוב" };
+    }
+  }
 
   jobs.set(jobId, {
     id: jobId,
     requestId,
-    url: payload.url,
-    title: payload.title || payload.url,
+    url: repUrl,
+    title:
+      payload.title ||
+      (mode === "list" ? `${JSON.parse(urlsJson).length} קישורים` : payload.url),
     quality: payload.quality,
     mode,
     status: "preparing",
@@ -740,9 +758,10 @@ async function startDownload(payload) {
   try {
     await dispatchWorkflow(cfg, {
       request_id: requestId,
-      url: payload.url,
+      url: repUrl,
       quality: payload.quality,
       mode,
+      urls: urlsJson,
       cookies_enc: cookiesEnc
     });
   } catch (err) {
