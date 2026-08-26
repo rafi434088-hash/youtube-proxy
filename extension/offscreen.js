@@ -52,14 +52,17 @@
     try {
       // api.github.com answers with a 302 to storage. Chrome drops the Authorization
       // header on the cross-origin hop, which is exactly what the storage host wants.
-      const res = await fetch(msg.url, {
+      // Only the api.github.com artifact endpoint needs credentials. A Release asset is
+      // public, on a different host, and rejects an unexpected Authorization header - so
+      // when no token is passed, send a bare request.
+      const res = await fetch(msg.url, msg.token ? {
         headers: {
           Authorization: `Bearer ${msg.token}`,
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28"
         }
-      });
-      if (!res.ok) return { ok: false, error: `הורדת ה-artifact נכשלה (HTTP ${res.status})` };
+      } : undefined);
+      if (!res.ok) return { ok: false, error: `ההורדה מגיטהאב נכשלה (HTTP ${res.status})` };
 
       // fetch() follows the redirect itself, and res.url is the URL it actually
       // landed on — the pre-signed blob-storage link, not api.github.com. That link

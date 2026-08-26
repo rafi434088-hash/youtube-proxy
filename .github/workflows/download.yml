@@ -175,10 +175,36 @@ jobs:
         if: always()
         run: rm -f cookies.txt
 
+      # Uploaded BEFORE the zip step below, so this fallback keeps carrying the raw media
+      # file exactly as it always did - no zip-inside-a-zip for anyone using it.
+      - name: Upload artifact (fallback for non-Netfree / private repos)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dl-${{ inputs.request_id }}
+          path: out/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
+      # Netfree filters downloads by file type: a .mp4 straight off github.com is blocked
+      # while a .zip goes through. So the release asset is always a zip, even for a single
+      # video, and the extension unpacks it on arrival (it already unzips collections).
+      - name: Wrap the file in a ZIP (Netfree blocks bare .mp4)
+        if: success()
+        run: |
+          mkdir -p pack
+          # Name the zip after the media file so the download is still recognisable.
+          FIRST=$(cd out && ls | head -1)
+          BASE="${FIRST%.*}"
+          [ -z "$BASE" ] && BASE="download"
+          (cd out && zip -r -0 -q "../pack/${BASE}.zip" .)
+          rm -rf out && mv pack out
+          ls -lh out
+
       # Publish the finished file as a Release asset. Its download URL lives on
       # github.com / githubusercontent.com - the same domains the extension's own
       # self-updater already pulls from behind Netfree - whereas the Actions artifact
-      # below is served from Azure blob storage, which Netfree blocks. The extension
+      # is served from Azure blob storage, which Netfree blocks. The extension
       # downloads the release asset directly and also shows its link for IDM.
       - name: Publish as Release (Netfree-friendly download)
         if: success()
@@ -204,15 +230,6 @@ jobs:
               | grep '^dl-' | tail -n +26 \
               | while read -r old; do gh release delete "$old" --yes --cleanup-tag 2>/dev/null || true; done
           } || true
-
-      - name: Upload artifact (fallback for non-Netfree / private repos)
-        uses: actions/upload-artifact@v4
-        with:
-          name: dl-${{ inputs.request_id }}
-          path: out/
-          retention-days: 1
-          if-no-files-found: error
-          compression-level: 0
 
   # ------------------------------------------------- collection: list what's in it
   # A separate job because a matrix's item list has to be known before that matrix's

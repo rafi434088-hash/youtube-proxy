@@ -519,6 +519,21 @@ async function ensureOffscreen() {
   return offscreenReady;
 }
 
+// Unzips any archive URL through the offscreen document. No token: release assets are
+// public. Used for the Netfree-friendly path, where even a single video arrives as a zip
+// because Netfree blocks a bare .mp4 by file type while letting .zip through.
+async function unpackZipUrl(url, jobId) {
+  await ensureOffscreen();
+  const res = await chrome.runtime.sendMessage({
+    target: "offscreen",
+    type: "UNZIP_ARTIFACT",
+    jobId,
+    url
+  });
+  if (!res || !res.ok) throw new Error((res && res.error) || "פריקת הקובץ נכשלה");
+  return res.files;
+}
+
 async function unpackArtifact(cfg, artifactId, jobId) {
   await ensureOffscreen();
   const res = await chrome.runtime.sendMessage({
@@ -712,8 +727,21 @@ async function driveJob(jobId) {
     for (let attempt = 0; attempt < 6 && !files; attempt += 1) {
       const assets = await findReleaseAssets(cfg, job.requestId).catch(() => null);
       if (assets) {
-        files = assets;
         patchJob(jobId, { directUrl: assets[0].url }); // copyable link for IDM etc.
+        // A single video ships as a zip only because Netfree blocks a bare .mp4 by file
+        // type, so that zip is packaging, not the deliverable: unpack it and save the
+        // media file itself. A collection/list is the opposite - the one ZIP named after
+        // the channel IS what was asked for, so it is saved as-is and never unpacked
+        // (unpacking it here would also undo the "no zip inside a zip" fix).
+        const isBundle = job.mode === "collection" || job.mode === "list";
+        if (!isBundle && assets.every((a) => /\.zip$/i.test(a.name))) {
+          patchJob(jobId, { detail: "פורק את הקובץ…" });
+          const inner = [];
+          for (const a of assets) inner.push(...(await unpackZipUrl(a.url, jobId)));
+          files = inner;
+        } else {
+          files = assets;
+        }
         break;
       }
       await sleep(2000);
