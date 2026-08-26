@@ -184,6 +184,7 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }} # these jobs don't checkout, so gh needs this
           TAG: dl-${{ inputs.request_id }}
         run: |
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
@@ -625,6 +626,7 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }} # these jobs don't checkout, so gh needs this
           TAG: dl-${{ inputs.request_id }}
         run: |
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
