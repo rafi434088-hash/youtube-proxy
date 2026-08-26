@@ -34,7 +34,8 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write # needed to publish the finished file as a Release asset (github.com
+                  # download, which works behind Netfree unlike the artifact CDN)
 
 concurrency:
   group: dl-${{ inputs.request_id }}
@@ -174,7 +175,26 @@ jobs:
         if: always()
         run: rm -f cookies.txt
 
-      - name: Upload artifact
+      # Publish the finished file as a Release asset. Its download URL lives on
+      # github.com / githubusercontent.com - the same domains the extension's own
+      # self-updater already pulls from behind Netfree - whereas the Actions artifact
+      # below is served from Azure blob storage, which Netfree blocks. The extension
+      # downloads the release asset directly and also shows its link for IDM.
+      - name: Publish as Release (Netfree-friendly download)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: dl-${{ inputs.request_id }}
+        run: |
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" out/* --title "$TAG" --notes "Automated download - safe to delete."
+          # keep the Releases page tidy: drop auto bundles beyond the newest 25
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null \
+            | grep '^dl-' | tail -n +26 \
+            | while read -r old; do gh release delete "$old" --yes --cleanup-tag 2>/dev/null || true; done
+
+      - name: Upload artifact (fallback for non-Netfree / private repos)
         uses: actions/upload-artifact@v4
         with:
           name: dl-${{ inputs.request_id }}
@@ -590,7 +610,23 @@ jobs:
           (cd merged && zip -r -q "../out/${{ needs.enumerate.outputs.collection_name }}.zip" .)
           echo "packaged $(find merged -type f | wc -l) of ${{ needs.enumerate.outputs.item_count }} items"
 
-      - name: Upload artifact
+      # Publish the single ZIP as a Release asset (github.com download that works behind
+      # Netfree; see the resolve-video job for why). The extension pulls it directly and
+      # shows its link for IDM.
+      - name: Publish as Release (Netfree-friendly download)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: dl-${{ inputs.request_id }}
+        run: |
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" out/* --title "$TAG" --notes "Automated download - safe to delete."
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[].tagName' 2>/dev/null \
+            | grep '^dl-' | tail -n +26 \
+            | while read -r old; do gh release delete "$old" --yes --cleanup-tag 2>/dev/null || true; done
+
+      - name: Upload artifact (fallback for non-Netfree / private repos)
         uses: actions/upload-artifact@v4
         with:
           name: dl-${{ inputs.request_id }}

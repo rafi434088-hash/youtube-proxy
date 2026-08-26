@@ -389,6 +389,25 @@ async function cancelRun(cfg, runId) {
   return res.ok || res.status === 202;
 }
 
+// The workflow also publishes the finished file as a GitHub Release asset, served from
+// github.com/...githubusercontent.com — the same domains the self-updater already pulls
+// from successfully behind Netfree, unlike the Actions artifact CDN (Azure blob) which
+// Netfree blocks. Returns [{name, url, size}] or null if no release yet (older workflow,
+// or GitHub hasn't indexed the tag — the caller retries a couple of times).
+async function findReleaseAssets(cfg, requestId) {
+  const res = await ghFetch(
+    `${API}/repos/${cfg.owner}/${cfg.repo}/releases/tags/dl-${requestId}`,
+    cfg
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) return null;
+  const body = await res.json();
+  const assets = (body.assets || [])
+    .filter((a) => a.browser_download_url)
+    .map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size || 0 }));
+  return assets.length ? assets : null;
+}
+
 /* ------------------------------------------------------------ recovery sync */
 
 // chrome.storage.session (where jobs live) doesn't survive a browser restart, and an
@@ -488,6 +507,9 @@ async function unpackArtifact(cfg, artifactId, jobId) {
 }
 
 function revokeBlob(blobUrl) {
+  // Only blob: URLs need revoking (and only those spin up the offscreen doc); a plain
+  // https release URL saved via chrome.downloads has nothing to revoke.
+  if (typeof blobUrl !== "string" || !blobUrl.startsWith("blob:")) return;
   chrome.runtime.sendMessage({ target: "offscreen", type: "REVOKE", blobUrl }).catch(() => {});
 }
 
@@ -656,15 +678,35 @@ async function driveJob(jobId) {
     }
 
     patchJob(jobId, { status: "fetching", detail: "מושך את הקובץ מ-GitHub…", percent: 55 });
-    const artifact = await findArtifact(cfg, jobs.get(jobId).runId, job.requestId);
-    const files = await unpackArtifact(cfg, artifact.id, jobId);
+
+    // Primary path: the run's Release asset(s), downloaded straight from github.com
+    // (works behind Netfree, and the file is already the final mp4/zip — no unzip).
+    // A freshly-created release can take a moment to be findable by tag, so retry.
+    let files = null; // [{name, url}] release, or [{name, blobUrl}] artifact fallback
+    for (let attempt = 0; attempt < 6 && !files; attempt += 1) {
+      const assets = await findReleaseAssets(cfg, job.requestId).catch(() => null);
+      if (assets) {
+        files = assets;
+        patchJob(jobId, { directUrl: assets[0].url }); // copyable link for IDM etc.
+        break;
+      }
+      await sleep(2000);
+    }
+
+    // Fallback (e.g. a repo whose workflow predates releases): the Actions artifact,
+    // fetched from the Azure blob CDN and unzipped in the offscreen document.
+    if (!files) {
+      const artifact = await findArtifact(cfg, jobs.get(jobId).runId, job.requestId);
+      files = await unpackArtifact(cfg, artifact.id, jobId);
+    }
 
     patchJob(jobId, { status: "saving", detail: "שומר במחשב…", percent: 85 });
     const saved = [];
     for (let i = 0; i < files.length; i += 1) {
       const file = files[i];
       const filename = sanitizeFilename(file.name);
-      const actualName = await saveBlob(file.blobUrl, filename, (received, total) => {
+      const source = file.url || file.blobUrl; // release URL or unzipped blob
+      const actualName = await saveBlob(source, filename, (received, total) => {
         const frac = total ? received / total : 0;
         const base = 85 + Math.floor((15 * i) / files.length);
         const span = 15 / files.length;
