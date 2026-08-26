@@ -285,9 +285,13 @@ async function fetchRunErrorMessage(cfg, runId) {
       if (job.conclusion && job.conclusion !== "success" && job.check_run_url) {
         const res = await ghFetch(`${job.check_run_url}/annotations`, cfg);
         if (!res.ok) continue;
-        const annotations = await res.json();
-        const failure = (annotations || []).find((a) => a.annotation_level === "failure") || annotations[0];
-        if (failure && failure.message) return failure.message.trim();
+        const annotations = (await res.json()) || [];
+        // GitHub always adds a generic "Process completed with exit code N" annotation;
+        // the useful one is our own ::error:: text, so skip the boilerplate.
+        const meaningful = annotations
+          .map((a) => (a.message || "").trim())
+          .filter((m) => m && !/^Process completed with exit code/i.test(m));
+        if (meaningful.length) return meaningful[0];
       }
     }
   } catch {
