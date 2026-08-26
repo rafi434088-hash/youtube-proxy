@@ -217,9 +217,18 @@ jobs:
           # High safety cap only (a runaway guard). Items are batched across jobs below,
           # so this is not the old 200-per-channel limit.
           MAX_ITEMS = 2000
-          # A GitHub matrix allows at most 256 jobs, so items are grouped into at most
-          # this many batches; each batch job downloads its whole group in a loop.
-          MAX_JOBS = 200
+          # Speed model: every job pays a fixed ~40s of setup (Deno + pip installs)
+          # before it downloads anything, and GitHub Free runs at most ~20 jobs at once
+          # (the rest queue). So the fastest layout is one batch per concurrent slot:
+          #   - fewer than CONCURRENCY jobs  -> runners sit idle (slower)
+          #   - many more than CONCURRENCY   -> the same 20 slots, but the ~40s setup is
+          #                                     paid over and over for no extra parallelism
+          # Making one job per video (the old batch_size==1) was the worst case: a 198-video
+          # channel paid that setup 198 times. We instead spread the videos over ~CONCURRENCY
+          # batches so setup is paid ~20 times total. MAX_BATCH keeps any single job from
+          # growing so large it risks the 120-min timeout or loses many videos if it dies.
+          CONCURRENCY = 20
+          MAX_BATCH = 40
 
           cookies_path = None
           cookies_enc = os.environ.get("COOKIES_ENC", "")
@@ -359,11 +368,14 @@ jobs:
           if len(items) >= MAX_ITEMS:
               print(f"::notice::stopping at {MAX_ITEMS} items — this collection may have more")
 
-          # Group items into at most MAX_JOBS batches; each batch becomes one matrix job
-          # that downloads its whole group. This is what lifts the old 200 cap: a channel
-          # with, say, 800 videos runs as 200 jobs of ~4 videos each instead of failing
-          # the 256-job matrix limit.
-          batch_size = max(1, -(-len(items) // MAX_JOBS))  # ceil division
+          # Aim for ~CONCURRENCY batches so all runner slots are filled and setup is paid
+          # once per slot rather than once per video. Split further only when a channel is
+          # big enough that a single job would exceed MAX_BATCH (keeps each job's runtime
+          # and blast-radius bounded). Examples: 40 videos -> 20 jobs of 2; 198 -> 20 jobs
+          # of 10; 800 -> 20 jobs of 40; 2000 -> 50 jobs of 40.
+          target_jobs = min(len(items), CONCURRENCY)
+          batch_size = max(1, -(-len(items) // target_jobs))  # ceil division
+          batch_size = min(batch_size, MAX_BATCH)
           batches = [
               {"i": idx, "items": items[start:start + batch_size]}
               for idx, start in enumerate(range(0, len(items), batch_size))
@@ -393,7 +405,7 @@ jobs:
     continue-on-error: true # one bad batch shouldn't fail the whole collection
     strategy:
       fail-fast: false
-      max-parallel: 16 # GitHub's own account-wide concurrent-job ceiling is the real cap
+      max-parallel: 20 # GitHub Free runs at most ~20 jobs at once; use all of them
       matrix:
         batch: ${{ fromJson(needs.enumerate.outputs.batches) }}
     name: download-item ${{ matrix.batch.i }}
