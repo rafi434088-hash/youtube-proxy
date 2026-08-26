@@ -276,22 +276,28 @@ jobs:
           # that's already a specific playlist (?list=...), gets the flat listing.
           is_single_playlist = (not is_youtube) or "list=" in TARGET_URL
 
+          seen_ids = set()
+
           def add_entries(entries, album):
               for e in entries or []:
                   if not e or len(items) >= MAX_ITEMS:
                       continue
                   vid = e.get("id")
                   url = resolve_url(e)
-                  if vid and url:
+                  # Dedupe by video id: a video that's both in a playlist and a loose
+                  # upload is kept once, in the playlist folder (playlists run first).
+                  if vid and url and vid not in seen_ids:
+                      seen_ids.add(vid)
                       items.append({"id": vid, "url": url, "album": album})
 
           if is_single_playlist:
               # A specific playlist (or a non-YouTube site) — one flat level, no album split.
               add_entries(info.get("entries"), "")
           else:
-              # A channel: list its Playlists tab first, so the zip can mirror how the
-              # channel organizes itself (albums, live sets, ...) instead of one flat
-              # dump. Falls back to the plain video list if it has no playlists.
+              # A channel: mirror how it organizes itself. Each of the channel's own
+              # playlists becomes a folder (album, live set, ...); videos uploaded to the
+              # channel but not in any playlist go into the root of the zip. Nothing is
+              # left out, and nothing is downloaded twice.
               parts = urlsplit(TARGET_URL)
               segs = [s for s in parts.path.split("/") if s]
               if segs and segs[0] in ("channel", "c", "user") and len(segs) >= 2:
@@ -301,28 +307,41 @@ jobs:
               else:
                   base = "/" + segs[0] if segs else ""
               netloc = parts.netloc or "www.youtube.com"
-              playlists_url = urlunsplit((parts.scheme or "https", netloc, base.rstrip("/") + "/playlists", "", ""))
 
+              def channel_tab(tab):
+                  return urlunsplit((parts.scheme or "https", netloc, base.rstrip("/") + "/" + tab, "", ""))
+
+              # 1. playlists -> one folder each
               playlists = []
               try:
-                  pl_info = flat_list(playlists_url)
+                  pl_info = flat_list(channel_tab("playlists"))
                   for e in pl_info.get("entries") or []:
                       if e and e.get("id"):
                           playlists.append({"id": e["id"], "title": e.get("title") or e["id"]})
               except Exception:
                   playlists = []
+              for pl in playlists:
+                  if len(items) >= MAX_ITEMS:
+                      break
+                  album = safe_name(pl["title"], limit=80) or pl["id"]
+                  try:
+                      pl_videos = flat_list(f"https://www.youtube.com/playlist?list={pl['id']}")
+                  except Exception:
+                      continue
+                  add_entries(pl_videos.get("entries"), album)
 
-              if playlists:
-                  for pl in playlists:
-                      if len(items) >= MAX_ITEMS:
-                          break
-                      album = safe_name(pl["title"], limit=80) or pl["id"]
-                      try:
-                          pl_videos = flat_list(f"https://www.youtube.com/playlist?list={pl['id']}")
-                      except Exception:
-                          continue
-                      add_entries(pl_videos.get("entries"), album)
-              else:
+              # 2. loose uploads (Videos / Shorts / Streams tabs) -> root of the zip,
+              #    skipping any already pulled in via a playlist above.
+              for tab in ("videos", "shorts", "streams"):
+                  if len(items) >= MAX_ITEMS:
+                      break
+                  try:
+                      add_entries(flat_list(channel_tab(tab)).get("entries"), "")
+                  except Exception:
+                      continue
+
+              # 3. last resort: whatever the bare channel URL lists (rarely needed).
+              if not items:
                   add_entries(info.get("entries"), "")
 
           if os.path.exists("cookies.txt"):
