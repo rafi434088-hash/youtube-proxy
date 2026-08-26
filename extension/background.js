@@ -116,6 +116,31 @@ function formatBytes(n) {
 
 const COOKIE_DOMAINS = ["youtube.com", "google.com"];
 
+// The auth cookies yt-dlp actually needs for a logged-in YouTube session. Everything
+// else on google.com (ads, analytics, consent, per-product prefs) is dropped — that
+// bulk is what pushed the payload over the size limit ("cookies too large"). Every
+// cookie on youtube.com is kept; from google.com only these login cookies are kept.
+const YT_AUTH_COOKIES = new Set([
+  "SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO",
+  "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID",
+  "__Secure-1PSIDTS", "__Secure-3PSIDTS", "__Secure-1PSIDCC", "__Secure-3PSIDCC",
+  "SIDCC", "PREF", "VISITOR_INFO1_LIVE", "VISITOR_PRIVACY_METADATA", "YSC",
+  "__Secure-YEC", "CONSENT", "SOCS"
+]);
+
+function cookieHost(domain) {
+  return domain.replace(/^\./, "");
+}
+
+// Keep it if it's on youtube.com (any of it), or it's one of the essential Google
+// login cookies. This is the "YouTube-only" filter: it strips the google.com noise
+// while preserving what's needed to stay signed in.
+function isRelevantCookie(c) {
+  const host = cookieHost(c.domain);
+  if (host === "youtube.com" || host.endsWith(".youtube.com")) return true;
+  return YT_AUTH_COOKIES.has(c.name);
+}
+
 async function exportYoutubeCookies() {
   if (!chrome.cookies || !chrome.cookies.getAll) return null;
   try {
@@ -123,6 +148,7 @@ async function exportYoutubeCookies() {
     const seen = new Set();
     const lines = ["# Netscape HTTP Cookie File"];
     for (const c of groups.flat()) {
+      if (!isRelevantCookie(c)) continue;
       const key = `${c.domain}|${c.name}|${c.path}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -683,7 +709,10 @@ async function startDownload(payload) {
     // workflow_dispatch caps its inputs; fail with something readable instead of
     // letting GitHub answer with an opaque 422.
     if (cookiesEnc.length > 60000) {
-      return { ok: false, error: "העוגיות גדולות מדי לשליחה — נקו עוגיות ישנות בדפדפן ונסו שוב" };
+      return {
+        ok: false,
+        error: "העוגיות עדיין גדולות מדי אחרי הסינון — נקו עוגיות יוטיוב ישנות בדפדפן והתחברו מחדש, ונסו שוב"
+      };
     }
   }
 
